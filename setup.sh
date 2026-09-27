@@ -85,12 +85,16 @@ else
 fi
 
 echo "== 3/9 写入 Cloudflare API Token =="
-if [ -z "$CF_TOKEN_INPUT" ]; then
-	read -rsp "  粘贴 Cloudflare API Token（输入不可见，回车继续）: " CF_TOKEN_INPUT
+if [ -z "$CF_TOKEN_INPUT" ] && [ -s /etc/caddy/cf.env ]; then
+	read -rsp "  检测到已有 Token，直接回车保留；换新的就粘贴（输入不可见）: " CF_TOKEN_INPUT
 	echo
 fi
 if [ -z "$CF_TOKEN_INPUT" ]; then
-	err "没填 Token。以后补：printf 'CF_API_TOKEN=你的token\n' > /etc/caddy/cf.env && chmod 600 /etc/caddy/cf.env"
+	if [ -s /etc/caddy/cf.env ]; then
+		log "保留已有 Token（/etc/caddy/cf.env）"
+	else
+		err "没填 Token。以后补：printf 'CF_API_TOKEN=你的token\n' > /etc/caddy/cf.env && chmod 600 /etc/caddy/cf.env"
+	fi
 else
 	# KEY=value 格式：Caddy systemd EnvironmentFile、admin-api.py、cf.sh 三方共用这一个文件
 	printf 'CF_API_TOKEN=%s\n' "$(printf '%s' "$CF_TOKEN_INPUT" | tr -d '[:space:]')" > /etc/caddy/cf.env
@@ -116,7 +120,8 @@ mkdir -p /var/cache/caddy/cf && chmod 700 /var/cache/caddy/cf
 log "cf.sh / add-site.sh / sync-dns.sh / enable-cf-native.sh 已安装"
 
 echo "== 6/9 校验并启动 Caddy =="
-caddy fmt --overwrite --config /etc/caddy/Caddyfile
+# 注意：caddy fmt 不认 --config，文件名是位置参数
+caddy fmt --overwrite /etc/caddy/Caddyfile
 if ! caddy validate --config /etc/caddy/Caddyfile; then
 	err "Caddyfile 校验失败，已中止。修完再跑：caddy validate --config /etc/caddy/Caddyfile"
 	exit 1
