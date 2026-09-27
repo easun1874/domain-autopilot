@@ -231,7 +231,7 @@ echo
 echo "下一步:"
 echo "  · caddy list-modules | grep cloudflare     看模块"
 echo "  · journalctl -u caddy -n 50 --no-pager     看有没有 CF API 报错"
-echo "  · 重新签发测试：caddy delete --config /etc/caddy/Caddyfile example.com"
+echo "  · 重新签发测试：rm -rf /var/lib/caddy/.local/share/caddy/certificates/*/example.com && systemctl restart caddy"
 echo "  · 注意 ①: dynamic_dns 的 domains 要改成你自己的父域"
 echo "  · 注意 ②: dynamic_domains 会自动扫站点域名，domains 块只是给的兜底样例"
 echo

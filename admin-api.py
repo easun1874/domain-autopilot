@@ -175,6 +175,47 @@ def get_status():
 
 
 # ---------------- 证书 ----------------
+#
+# caddy **没有** list-certificates 这类查询子命令（`caddy help` 里没有这个），
+# 所以证书信息只能直接读它的存储目录。布局：
+#   <data>/certificates/<issuer>/<name>/<name>.crt     同目录还有 .json 元数据
+# 默认 data 目录是 /var/lib/caddy/.local/share/caddy。
+CERT_BASES = [p for p in [
+    os.environ.get("CADDY_CERT_DIR", ""),
+    "/var/lib/caddy/.local/share/caddy/certificates",
+] if p]
+
+
+def cert_expiry(path):
+    """读一张证书的到期时间。没有 caddy 命令可用，只能借 openssl。"""
+    q = shellquote(path)
+    rc, out, _ = sh("openssl x509 -in %s -noout -enddate -dateopt iso_8601" % q)
+    if rc == 0 and "notAfter=" in out:
+        # openssl 3.x 给的是 "2026-12-26 03:10:45Z"（是空格不是 T），
+        # fromisoformat 在 3.11 之前不认空格，统一换成 T
+        return parse_expiry(out.split("notAfter=", 1)[1].strip().replace(" ", "T", 1))
+    # 更老的 openssl 不认 -dateopt，退回默认的 "Dec 26 03:10:45 2026 GMT"
+    rc, out, _ = sh("openssl x509 -in %s -noout -enddate" % q)
+    if rc == 0 and "notAfter=" in out:
+        raw = out.split("notAfter=", 1)[1].strip().replace(" GMT", "")
+        try:
+            return datetime.datetime.strptime(raw, "%b %d %H:%M:%S %Y").replace(
+                tzinfo=datetime.timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+def cert_names(crt):
+    """证书覆盖的域名。优先读 Caddy 写的 .json 元数据（能拿到泛域名），退化到目录名。"""
+    try:
+        with open(crt[:-4] + ".json", encoding="utf-8") as fh:
+            sans = (json.load(fh) or {}).get("sans") or []
+        if sans:
+            return [str(x) for x in sans]
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
+    return [os.path.basename(os.path.dirname(crt))]
 
 
 def parse_expiry(iso_or_ts):
@@ -208,23 +249,21 @@ def get_certs():
             out.append({"name": name, "expires": exp.isoformat(), "days": days})
         return out
 
-    rc, out, _ = sh("caddy list-certificates")
-    if rc != 0:
-        return []
-    try:
-        raw = json.loads(out)
-    except json.JSONDecodeError:
-        return []
-
     now = datetime.datetime.now(datetime.timezone.utc)
-    certs = []
-    for item in raw:
-        names = item.get("names") or item.get("subjects") or []
-        exp_raw = item.get("expiration") or item.get("not_after")
-        dt = parse_expiry(exp_raw)
-        days = int((dt - now).total_seconds() // 86400) if dt else None
-        for n in names:
-            certs.append({"name": n, "expires": dt.isoformat() if dt else None, "days": days})
+    certs, seen = [], set()
+    for base in CERT_BASES:
+        if not os.path.isdir(base):
+            continue
+        for crt in sorted(glob.glob(os.path.join(base, "*", "*", "*.crt"))):
+            dt = cert_expiry(crt)
+            days = int((dt - now).total_seconds() // 86400) if dt else None
+            for n in cert_names(crt):
+                if n in seen:
+                    continue
+                seen.add(n)
+                certs.append({"name": n,
+                              "expires": dt.isoformat() if dt else None,
+                              "days": days})
     certs.sort(key=lambda c: (c["days"] is None, c["days"]))
     return certs
 

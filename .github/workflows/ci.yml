@@ -23,6 +23,27 @@ jobs:
       - name: ShellCheck（只拦 error 级）
         run: shellcheck --severity=error *.sh
 
+      - name: caddy 子命令必须真实存在
+        run: |
+          # 写错子命令时 caddy 只会回一句 "unknown command"，如果这句提示藏在
+          # 安装脚本的输出文字里，更没人会发现 —— 交给 CI 拦。
+          KNOWN="adapt add-package build-info completion environ file-server fmt
+                 hash-password help list-modules manpage reload remove-package
+                 respond reverse-proxy run start stop storage trust untrust
+                 upgrade validate version"
+          NOTCMD="admin-api"
+
+          bad=0
+          for w in $(grep -rhoE '(^|[^a-zA-Z-])caddy [a-z][a-z-]+' admin-api.py *.sh \
+                     | grep -oE 'caddy [a-z][a-z-]+' | awk '{print $2}' | sort -u); do
+            case " $NOTCMD " in *" $w "*) continue ;; esac
+            case " $KNOWN "  in *" $w "*) continue ;; esac
+            echo "  不存在的子命令: caddy $w"
+            bad=1
+          done
+          [ "$bad" -eq 0 ] || { echo "以上子命令 caddy 不认，执行时会 unknown command"; exit 1; }
+          echo "  所有 caddy 子命令均存在"
+
       - name: Python 编译检查
         run: python3 -m py_compile admin-api.py telegram-bot.py
 
