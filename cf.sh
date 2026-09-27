@@ -26,6 +26,20 @@ _extract_token() {
 	printf '%s' "$t"
 }
 
+# Caddyfile 里的 {env.CF_API_TOKEN} 是在适配期（caddy adapt）求值的：
+# 手动执行 caddy validate / caddy reload 时，当前 shell 里没有这个变量，
+# Caddy 会报 "API token '' appears invalid; ..."，于是校验必然失败 ——
+# 表现为新站点加不上、update 重载不了。凡是直接调 caddy 的脚本，
+# 都先过一遍这里，把 cf.env 载入当前环境。
+cf_load_env() {
+	local f="${CF_TOKEN_FILE:-/etc/caddy/cf.env}"
+	[ -r "$f" ] || return 0
+	set -a
+	# shellcheck disable=SC1090
+	. "$f"
+	set +a
+}
+
 cf_token() {
 	local t=""
 	t="$(_extract_token "$CF_TOKEN_FILE")" || t=""

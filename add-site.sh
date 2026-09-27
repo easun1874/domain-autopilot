@@ -78,6 +78,11 @@ if [ -n "$CF_LIB" ]; then
 	. "$CF_LIB"
 fi
 
+# Caddyfile 里的 {env.CF_API_TOKEN} 是在适配期（caddy adapt）求值的，手动调
+# caddy validate/reload 时当前 shell 没有该变量，Caddy 会判定 Token 无效并失败，
+# 结果是站点配置写进去了却校验不过。这里一次性载入，后面所有 caddy 调用都受益。
+if declare -F cf_load_env >/dev/null 2>&1; then cf_load_env; fi
+
 PROXIED="true"
 [ "$NO_PROXY" -eq 1 ] && PROXIED="false"
 

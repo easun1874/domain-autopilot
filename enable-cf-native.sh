@@ -200,6 +200,13 @@ else
 fi
 
 # ---------- 校验并热加载 ----------
+# {env.CF_API_TOKEN} 是在适配期（caddy adapt）求值的，手动调 caddy 时当前 shell
+# 没有这个变量，Caddy 会报 "API token '' appears invalid"。先把刚写好的 cf.env 载入。
+set -a
+# shellcheck disable=SC1090
+. "$ENV_FILE"
+set +a
+
 # 注意：caddy fmt 不认 --config（文件名是位置参数）。写 --config 会 unknown flag
 # 直接返回非 0，在 set -e/if 里表现为整个脚本失败。
 if ! caddy fmt --overwrite "$CONF" >/dev/null 2>&1; then

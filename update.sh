@@ -132,6 +132,14 @@ else
 fi
 
 if [ "$DO_RELOAD" -eq 1 ]; then
+	# Caddyfile 里的 {env.CF_API_TOKEN}（启用 CF 原生集成后会写入）在适配期求值，
+	# 手动调 caddy 时环境里没有它会被判成无效 Token，这里先载入 cf.env。
+	if [ -r /etc/caddy/cf.env ]; then
+		set -a
+		# shellcheck disable=SC1091
+		. /etc/caddy/cf.env
+		set +a
+	fi
 	caddy validate --config /etc/caddy/Caddyfile >/dev/null 2>&1 \
 		&& caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 \
 		&& log "Caddy 配置已热加载（站点无中断）" \
