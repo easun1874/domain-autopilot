@@ -183,12 +183,44 @@ ssh -N -L 8848:127.0.0.1:8848 -p 2222 root@203.0.113.10
 ## 2. 拿 Cloudflare API Token（一次性）
 
 1. 登录 `dash.cloudflare.com` → 右上角头像 → **My Profile** → **API Tokens**
-2. 点 **Create Token** → 选 **Edit zone DNS** 模板
+2. 点 **Create Token** → 选 **Edit zone DNS** 模板（自定义起见，也可以用 **Custom token**）
 3. 权限确认是这两条（少一条都会失败）：
    - `Zone → DNS → Edit`
    - `Zone → Zone → Read`
-4. 域名范围：选 **Include → All zones**（管所有域）或 **Specific zone** 只选这一个
-5. 点 **Continue to summary** → **Create Token** → 复制那串长 token
+   - 只需要这两个。不要勾 Account / Workers / Zone Settings 一类的，没必要
+4. 域名范围 **Zone Resources**：只跑一个域名就选 **Specific zone** 并勾它；
+   以后还要加别的域，就选 **Include → All zones**
+5. 点 **Continue to summary** → **Create Token** → 复制那串 token
+   > **只显示这一次**，关掉页面就再也看不全了，先存到密码管理器
+
+### 拿到之后先自己验一遍，别装到一半才发现
+
+```bash
+curl -s https://api.cloudflare.com/client/v4/user/tokens/verify \
+  -H "Authorization: Bearer 你的token"
+```
+
+看到 `"success":true` 就够了。想进一步确认有权限改 DNS：
+
+```bash
+curl -s "https://api.cloudflare.com/client/v4/zones?name=你的域名&status=active" \
+  -H "Authorization: Bearer 你的token"
+```
+
+第二步应该返回 `"result":[{"id":"...","name":"你的域名"}]`。**返回空数组就说明权限范围没圈到这个域**，
+去第 4 步把 Zone Resources 改成 All zones 重建一个。
+
+### 一个必踩的坑：域名别开橙色云
+
+Cloudflare 里 DNS 记录的代理开关（那朵**橙色的云**）必须保持关闭，也就是只留灰色云。
+
+开着代理会出两件事：
+
+- DNS-01 签不了证书 —— `_acme-challenge` 的 TXT 记录被 CF 自己吃掉，Let's Encrypt 看不到
+- `sync-dns.sh` 改不动 A 记录 —— 代理下改的是 CF 边缘节点，源站记录不动
+
+改法：DNS 页里把橙色云点成灰色，等几秒生效。这条跟 Token 权限无关，
+**权限全给对了但云是橙的，一样签不出证书**。
 
 ### 在哪接入（只接一次，三个地方共用）
 
