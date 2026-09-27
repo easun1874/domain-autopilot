@@ -425,6 +425,40 @@ add-site.sh app.example.com 127.0.0.1:8080 --proxy
 `add-site.sh` 已内置防护：上游里出现本机公网 IP、**且本机确实有进程在监听该端口**时，
 自动改写成 `127.0.0.1` 并提示；服务不在本机时保持原样，不会误伤。
 
+### 后端是自签 HTTPS 的面板（x-ui / 3x-ui 等）
+
+这类面板默认只开 HTTPS，证书还是自签的（常见伪装成 `CN=www.bing.com`）。照浏览器地址栏抄
+进上游会连着踩三个坑，现在都由 `add-site.sh` 自动处理：
+
+| 你输入的上游 | 会发生什么 |
+|---|---|
+| `203.0.113.10:35216/a6bba520f977239b9f` | 剥掉路径（上游不支持路径）→ 公网 IP 改回环 → 探测到该端口是 TLS，自动补 `https://` 并跳过证书校验 |
+| `https://127.0.0.1:35216` | 照原样用，跳过证书校验（内网 + `https` 自动判定为自签） |
+| `127.0.0.1:8800`（普通 HTTP 服务） | 探测不到 TLS，保持原样，不多加一行配置 |
+
+三条规则背后的道理：
+
+- **路径不该写进上游。** Caddy 本来就原样透传请求路径，所以路径属于访问 URL，不属于上游。
+  剥掉时会提示，添加结束时还会告诉你正确访问地址。
+- **不写 `https://` 也能识别。** 对回环/内网主机做一次 TLS 握手探测，能拿到证书就补上
+  `https://`，省得你为一个 502 查半天（Caddy 只会给 502，不会告诉你"它其实是 https"）。
+- **自签证书必须跳过校验**，否则报 `x509: certificate signed by unknown authority`。
+  上游是 `https` 且主机属回环/内网时自动加 `transport http { tls_insecure_skip_verify }`；
+  公网主机证书不受信则需显式 `-k` / `--insecure`。不想跳过就别加。
+
+> **x-ui 的 webBasePath 会让根路径 404，这是正常的。** 面板把 `/a6bba520...` 当成自己的
+> 地址，前端静态资源也全是绝对路径，所以不能把这串路径藏起来（藏了前端就 404）。
+> 添加后请用 `https://域名/a6bba520.../` 访问，分享给别人也带上这一段。
+
+想先看生成什么、再决定要不要落盘，加 `--dry-run`：
+
+```bash
+add-site.sh panel.example.com 203.0.113.10:35216/a6bba520f977239b9f --dry-run
+```
+
+只打印将要写入的 `sites/panel.example.com.conf`，不建 DNS、不落盘、不 reload。
+面板里也有对应提示，可直接填 `https://127.0.0.1:35216`。
+
 ### 反代别的机器上的服务（跨 VPS）
 
 上游写对方的地址就行。那道自动改写**不会碰跨机上游** —— 它只在本机公网 IP + 本机确有
@@ -579,7 +613,8 @@ add-site.sh example.com 127.0.0.1:8080 --dns
 |---|---|---|
 | `cf.sh: API 失败 ... 1001 bad request` | Token 没权限或域名不在该 zone | 检查 Token 的 `Zone:DNS:Edit` 和域名范围 |
 | `找不到 zone: xxx` | 域名没托管到 Cloudflare | `dig NS example.com` 确认 |
-| 返回 502 | 上游地址端口写错或容器没起 | VPS 上先 `curl -I 127.0.0.1:8080` 自检 |
+| 返回 502 | 上游端口写错、容器没起，或**后端是自签 HTTPS 却把上游写成了 http** | VPS 上 `curl -I 127.0.0.1:8080` 自检；若 `curl -sk https://127.0.0.1:35216` 有内容就是后者 → 上游写 `https://127.0.0.1:35216`（脚本会跳过自签校验） |
+| 根路径 404、带路径才通 | 上游服务把路径当自己的地址（x-ui / 3x-ui 的 webBasePath） | 属预期行为，用添加完成时输出的带路径 URL 访问 |
 | 签发报 `too many certificates` | 撞 LE 周限流 | 等一周；先用 staging 调试 |
 | DNS 解析直接就是 VPS 的 IP | 正常，默认就是直连（灰云） | 想改走 CF 代理：`add-site.sh ... --proxy`，或面板勾「开启 Cloudflare 代理」 |
 | 能访问但证书不是 Let's Encrypt | 有人开了 CF 代理，属预期 | 见第 9 节说明 |
@@ -611,6 +646,7 @@ domain-autopilot-update --check          # 看看这套工具有没有新版
 domain-autopilot-update                  # 更新到最新版（站点不受影响）
 
 add-site.sh --remove app.example.com      # 删站点（连带删 DNS 记录）
+add-site.sh panel.example.com https://127.0.0.1:35216 --dry-run   # 只看会生成什么，不落盘
 bash /usr/local/lib/caddy/cf.sh check     # 验证 Token
 bash /usr/local/lib/caddy/cf.sh ip        # 看本机公网 IP
 bash /usr/local/lib/caddy/cf.sh resolve app.example.com   # 查本地解析

@@ -61,11 +61,17 @@ RE_DOMAIN = re.compile(
 # 上游：host:port / scheme://host:port / unix//path。允许 IPv6 加方括号。
 # 用正则 + 一个函数而不是单条正则 —— 因为「无端口」这种错只有结合是否有 scheme
 # 才能判定（https://backend 合法、127.0.0.1 不合法，Caddy 会报缺端口）。
+#
+# 允许带路径：x-ui / 3x-ui 这类面板用 webBasePath 隐藏自己（访问地址形如
+# https://面板:35216/a6bba520...）。路径不在上游里生效，但用户照着浏览器地址栏
+# 抄下来是最自然的输入，add-site.sh 会剥掉路径并提示访问时要带 —— 所以这里放行，
+# 不要拦在机器人这一层。
 RE_UNIX = re.compile(r"^unix//\S+$")
 RE_UPSTREAM = re.compile(
     r"^(?:(?P<scheme>[a-z][a-z0-9+.\-]*)://)?"
     r"(?P<host>\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9_.\-]+)"
-    r"(?::(?P<port>\d{1,5}))?$"
+    r"(?::(?P<port>\d{1,5}))?"
+    r"(?P<path>/[^\s?#]*)?$"
 )
 
 
@@ -280,7 +286,9 @@ def help_text():
         "<b>/cancel</b> — 放弃当前这次添加\n"
         "<b>/help</b> — 看这条帮助\n\n"
         "上游写法：<code>127.0.0.1:8787</code>、<code>192.168.1.10:3000</code>，"
-        "带 <code>http://</code> 也行，但别带路径。\n"
+        "带 <code>http://</code> 也行。\n"
+        "后端是自签 https 的面板（x-ui 等）就写 <code>https://127.0.0.1:35216</code>，"
+        "证书校验会自动跳过；地址栏里那串路径不用抄进来。\n"
         "默认只建灰云（仅 DNS）记录直连源站，不开 Cloudflare 代理。"
     )
 
@@ -323,8 +331,8 @@ def validate(domain, upstream):
         return "上游地址不能为空"
     if not valid_upstream(upstream):
         return ("上游地址格式不对：%s\n"
-                "只支持 scheme://主机:端口，不能带路径、不要结尾斜杠；"
-                "主机后面要写端口（如 127.0.0.1:8787）" % upstream)
+                "要写成 scheme://主机:端口（如 127.0.0.1:8787），"
+                "主机后面必须带端口" % upstream)
     return None
 
 

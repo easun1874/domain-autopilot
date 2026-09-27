@@ -131,8 +131,10 @@ summary{cursor:pointer; font-size:13px; color:var(--muted)}
         <label for="fDomain">域名</label>
         <input type="text" id="fDomain" placeholder="app.example.com">
         <label for="fUpstream">上游地址</label>
-        <input type="text" id="fUpstream" placeholder="127.0.0.1:8080 或 192.168.1.10:5000 或 wiki:3000">
-        <div class="hint">本机端口、局域网 IP、Docker 服务名都可以</div>
+        <input type="text" id="fUpstream" placeholder="127.0.0.1:8080 或 192.168.1.10:5000 或 https://127.0.0.1:35216">
+        <div class="hint">本机端口、局域网 IP、Docker 服务名都可以。后端是自签 HTTPS 的面板
+          （x-ui / 3x-ui 等）就写 <code>https://127.0.0.1:端口</code>，证书校验会自动跳过；
+          浏览器地址栏里那串路径不用抄进来，访问时带上即可。</div>
 
         <div class="checks">
           <label class="chk"><input type="checkbox" id="fDns01"> 强制 DNS-01 签发</label>

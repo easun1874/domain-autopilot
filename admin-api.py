@@ -40,11 +40,23 @@ TG_BOT_FILE = os.environ.get("TG_BOT_FILE", "/usr/local/lib/caddy/telegram-bot.p
 
 # ---------------- 工具 ----------------
 
+# add-site.sh 这类脚本是给终端看的，输出里带 \033[32m 这类 ANSI 色码。
+# 原样塞进网页会显示成 "[31m[!!][0m 上游地址不能带路径…"（字面量乱码），出口统一剥掉。
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def strip_ansi(s):
+    return ANSI_RE.sub("", s or "")
+
 
 def sh(cmd, timeout=20):
     try:
         p = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
-        return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
+        return (
+            p.returncode,
+            strip_ansi(p.stdout).strip(),
+            strip_ansi(p.stderr).strip(),
+        )
     except Exception as exc:  # noqa: BLE001
         return 1, "", str(exc)
 

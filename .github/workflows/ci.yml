@@ -55,15 +55,21 @@ jobs:
           bot = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(bot)
 
-          # 合法上游：host:port / scheme://host:port / unix socket
+          # 合法上游：host:port / scheme://host:port / 自签 https / 带路径（会被剥掉）/ unix socket
           for u in ["127.0.0.1:8080", "http://127.0.0.1:8080", "wiki:3000",
-                    "https://backend.example.com", "[::1]:8080", "unix//run/app.sock"]:
+                    "https://backend.example.com", "https://127.0.0.1:35216",
+                    "127.0.0.1:35216/a6bba520f977239b9f", "http://127.0.0.1:8080/",
+                    "[::1]:8080", "unix//run/app.sock"]:
               assert bot.valid_upstream(u), "应接受的上游被拒了: %s" % u
 
-          # 脏输入：带路径、结尾斜杠、没端口、端口越界 —— 这些都会让 caddy adapt 失败
-          for u in ["http://127.0.0.1:8080/", "127.0.0.1:8080/api", "127.0.0.1",
-                    "", "1.2.3.4:99999", "a b:1", "http://h:80/x"]:
+          # 脏输入：没端口且没 scheme、端口越界、含空格、空值 —— 这些会让 caddy adapt 失败
+          for u in ["127.0.0.1", "", "1.2.3.4:99999", "a b:1", "http://h:0"]:
               assert not bot.valid_upstream(u), "应拒绝的上游被接受了: %r" % u
+
+          # 带路径的输入必须能被拆成 主机:端口 + 路径（add-site.sh 用同一套判定剥路径）
+          m = bot.RE_UPSTREAM.match("127.0.0.1:35216/a6bba520f977239b9f")
+          assert m and m.group("host") == "127.0.0.1" and m.group("port") == "35216"
+          assert m.group("path") == "/a6bba520f977239b9f", "路径没被识别出来"
 
           for d in ["oci.example.com", "a-b.c.example.com"]:
               assert bot.RE_DOMAIN.match(d), "应接受的域名被拒了: %s" % d
