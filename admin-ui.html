@@ -165,13 +165,6 @@ summary{cursor:pointer; font-size:13px; color:var(--muted)}
 
       <div class="card">
         <h2>添加站点</h2>
-        <label for="fNode">目标节点</label>
-        <select id="fNode"></select>
-        <div class="hint"><b>一般不用管这里，保持默认的「本机」就行。</b>站点加在本机上，上游可以直接
-          写别的机器的公网地址 —— 跨机反代<b>不需要</b>先加节点。只有一种情况要换成别的机器：
-          上游是 <code>127.0.0.1</code> 这类回环地址，而那个服务不在本机 —— 回环地址从别的机器
-          连不进去，只能由它所在的那台机器自己反代。添加时面板会先探一次，连不上会提醒你。</div>
-
         <label for="fDomain">域名</label>
         <input type="text" id="fDomain" placeholder="app.example.com">
         <label for="fUpstream">上游地址</label>
@@ -198,6 +191,19 @@ summary{cursor:pointer; font-size:13px; color:var(--muted)}
                    autocomplete="new-password">
             <div class="hint">Caddy 用 bcrypt 存 hash，明文密码不落盘。面板 / 后台这类东西
               放在公网上时，不填这一项就等于把控制权挂出去了。</div>
+          </div>
+        </details>
+
+        <!-- 默认藏起来：只有本机可加时这一项毫无意义，露出来只会让人以为必填。
+             加了节点、真有得选之后由 renderNodeSelect() 放出来。 -->
+        <details id="nodeAdv" style="display:none">
+          <summary>站点加在哪台机器：<b id="nodeAdvLabel">本机</b></summary>
+          <div style="margin-top:6px">
+            <select id="fNode"></select>
+            <div class="hint"><b>不用改，保持默认就行。</b>上游可以直接写别的机器的公网地址 ——
+              跨机反代<b>不需要</b>先加节点，面板就在这里直接反代过去。只有「上游写的是
+              <code>127.0.0.1</code> 这类回环地址、而那个服务不在本机」时才需要换：回环地址的含义
+              是「运行 Caddy 的那台机器自己」，从别的机器连不进去，只能由它所在的那台机器反代。</div>
           </div>
         </details>
 
@@ -557,10 +563,21 @@ function renderNodes(nodes, reports) {
 function renderNodeSelect(nodes) {
   const sel = $("fNode");
   const cur = sel.value;
-  sel.innerHTML = (nodes || []).map(n =>
+  const list = nodes || [];
+  sel.innerHTML = list.map(n =>
     '<option value="' + n.name + '">' + n.name + (n.local ? "（本机）" : " — " + n.host) + '</option>'
   ).join("");
   if (cur) sel.value = cur;
+  sel.onchange = updateNodeAdvLabel;
+  updateNodeAdvLabel();
+  // 只有本机时这一项根本没有可选项 —— 整块藏掉，免得看着像必填步骤。
+  // 加了节点、出现真实选择之后它会自己冒出来。
+  $("nodeAdv").style.display = list.length > 1 ? "" : "none";
+}
+
+function updateNodeAdvLabel() {
+  const v = ($("fNode").value || "local");
+  $("nodeAdvLabel").textContent = (v === "local") ? "本机" : v;
 }
 
 async function loadNodes() {
@@ -636,6 +653,7 @@ $("btnRefresh").onclick = () => { loadAll(); loadTelegram(); };
 
 // 本机视角的可达性预检。Caddy 也跑在本机，所以「本机连不上」基本就等于站点将来会 502。
 // 连得上就静默放过（用户不需要知道有探测这回事），只有连不上 / 是回环地址时问一句。
+// 返回 {msg, needNode}：needNode 表示「换台机器才可能对」，调用方据此把节点那一项露出来。
 async function localUpstreamWarning(up) {
   let p;
   try {
@@ -646,19 +664,22 @@ async function localUpstreamWarning(up) {
   if (!p.ok) return null;
 
   if (p.loopback) {
-    return "上游是回环地址 " + p.target + "。\n\n" +
+    return {needNode: true, msg:
+      "上游是回环地址 " + p.target + "。\n\n" +
       "回环地址的含义是「运行 Caddy 的那台机器自己」：\n" +
-      "· 服务就在本机 → 正确，继续\n" +
-      "· 服务在别的机器上 → 站点会指向错的东西，得去那台机器上添加\n\n" +
+      "· 服务就在本机 → 点「确定」继续添加\n" +
+      "· 服务在别的机器上 → 点「取消」，再把下面「站点加在哪台机器」换成那一台\n" +
+      "  （那条机器没加过，先在上方「节点」卡片里加）\n\n" +
       (p.reachable ? "（本机确实有东西在听这个端口）\n\n"
                    : "（注意：本机现在没有服务在听这个端口）\n\n") +
-      "确认在本机添加？";
+      "确认加在本机？"};
   }
   if (!p.reachable) {
-    return "本机连不到 " + p.target + (p.error ? "（" + p.error + "）" : "") + "。\n\n" +
+    return {needNode: false, msg:
+      "本机连不到 " + p.target + (p.error ? "（" + p.error + "）" : "") + "。\n\n" +
       "Caddy 也跑在本机，所以它多半同样连不上，站点会返回 502。\n" +
       "常见原因：服务没起、端口没开、防火墙没放行本机。\n\n" +
-      "仍然添加？";
+      "仍然添加？"};
   }
   return null;
 }
@@ -672,11 +693,15 @@ $("btnAdd").onclick = async () => {
   if (node === "local") {
     // 探测最长要等 3 秒，先把按钮锁上并给个说明，免得看起来像卡住了
     showOut("正在从本机探测 " + upstream + " 的连通性…");
-    const why = await localUpstreamWarning(upstream);
-    if (why && !confirm(why)) {
-      showOut("已取消，没有做任何改动");
-      $("btnAdd").disabled = false;        // 别把按钮留在禁用态
-      return;
+    const w = await localUpstreamWarning(upstream);
+    if (w) {
+      // 需要换机器才能解决时，把「站点加在哪台机器」直接展开，别让人自己去翻
+      if (w.needNode && $("nodeAdv").style.display !== "none") $("nodeAdv").open = true;
+      if (!confirm(w.msg)) {
+        showOut("已取消，没有做任何改动");
+        $("btnAdd").disabled = false;        // 别把按钮留在禁用态
+        return;
+      }
     }
   }
   const r = await api("/api/sites", {
