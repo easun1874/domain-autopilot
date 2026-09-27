@@ -294,7 +294,9 @@ curl -sI https://app.example.com | head -1</pre></div>
       </div>
       <div class="card">
         <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M1 5l7-4 7 4v6l-7 4-7-4V5zm7 1.8L3.4 3.9 8 1.4l4.6 2.5L8 6.8zm-5 2.4l4 2.2V13L3 10.2zm10 0L9 13V11.4l4-2.2z"/></svg>上游不限形态</h3>
-        <p>本机端口、局域网另一台机器、Docker compose 服务名，都能当上游。</p>
+        <p>本机端口、局域网另一台机器、Docker compose 服务名都能当上游。后端若是<b>自签
+          HTTPS 的面板</b>（x-ui / 3x-ui 等），直接写地址栏那串也行：路径会被自动剥掉，
+          <code>https://</code> 自动补上，证书校验自动跳过。</p>
       </div>
       <div class="card">
         <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M14 2H2a1 1 0 00-1 1v8a1 1 0 001 1h12a1 1 0 001-1V3a1 1 0 00-1-1zM2 3h12v6H2V3zm3 9h6v1H5v-1z"/></svg>Web 管理面板</h3>
