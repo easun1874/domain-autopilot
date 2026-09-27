@@ -71,7 +71,7 @@ cf_parent_domain() { # a.b.example.com -> example.com
 }
 
 cf_zone_id() { # 查 zone id，带本地缓存
-	local domain="$1" zone cache="$CF_CACHE_DIR/${1}"
+	local domain="$1" zone="" cache="$CF_CACHE_DIR/${1}"
 	[ -f "$cache" ] && zone="$(cat "$cache")"
 	if [ -n "$zone" ]; then
 		printf '%s' "$zone"
