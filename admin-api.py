@@ -98,8 +98,8 @@ def add_site(payload):
     cmd = "add-site.sh %s %s" % (shellquote(domain), shellquote(upstream))
     if payload.get("dns01"):
         cmd += " --dns"
-    if payload.get("noProxy"):
-        cmd += " --no-proxy"
+    if payload.get("useProxy"):
+        cmd += " --proxy"
     if payload.get("noApiDns"):
         cmd += " --no-api-dns"
     if payload.get("ip"):

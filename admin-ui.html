@@ -136,11 +136,11 @@ summary{cursor:pointer; font-size:13px; color:var(--muted)}
 
         <div class="checks">
           <label class="chk"><input type="checkbox" id="fDns01"> 强制 DNS-01 签发</label>
-          <label class="chk"><input type="checkbox" id="fNoProxy"> 关闭 Cloudflare 代理</label>
+          <label class="chk"><input type="checkbox" id="fUseProxy"> 开启 Cloudflare 代理（默认关闭）</label>
           <label class="chk"><input type="checkbox" id="fNoApiDns"> 不自动建 DNS 记录</label>
         </div>
-        <label for="fIp">源站 IP（留空自动检测）</label>
-        <input type="text" id="fIp" placeholder="203.0.113.10">
+        <label for="fIp">源站 IP（留空自动检测，通常不用填）</label>
+        <input type="text" id="fIp" placeholder="留空即可">
 
         <div class="row">
           <button id="btnAdd" class="primary">添加</button>
@@ -313,14 +313,14 @@ $("btnAdd").onclick = async () => {
       domain: domain,
       upstream: upstream,
       dns01: $("fDns01").checked,
-      noProxy: $("fNoProxy").checked,
+      useProxy: $("fUseProxy").checked,
       noApiDns: $("fNoApiDns").checked,
       ip: $("fIp").value.trim() || null
     })
   });
   showOut(r.output || r.error || JSON.stringify(r), r.ok ? "ok" : "err");
   $("btnAdd").disabled = false;
-  if (r.ok) { $("fDomain").value = ""; $("fUpstream").value = ""; }
+  if (r.ok) { $("fDomain").value = ""; $("fUpstream").value = ""; $("fIp").value = ""; }
   await loadAll();
 };
 

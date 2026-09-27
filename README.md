@@ -213,17 +213,28 @@ curl -s "https://api.cloudflare.com/client/v4/zones?name=你的域名&status=act
 第二步应该返回 `"result":[{"id":"...","name":"你的域名"}]`。**返回空数组就说明权限范围没圈到这个域**，
 去第 4 步把 Zone Resources 改成 All zones 重建一个。
 
-### 一个必踩的坑：域名别开橙色云
+### 关于橙色云：默认不开
 
-Cloudflare 里 DNS 记录的代理开关（那朵**橙色的云**）必须保持关闭，也就是只留灰色云。
+Cloudflare 里 DNS 记录的代理开关（那朵**橙色的云**）**默认保持关闭**，也就是只留灰色云。
+`add-site.sh` 建记录时就是灰云，不需要你手动去点。
 
-开着代理会出两件事：
+**默认不开的三个理由：**
 
-- DNS-01 签不了证书 —— `_acme-challenge` 的 TXT 记录被 CF 自己吃掉，Let's Encrypt 看不到
+- 直连源站，浏览器看到的就是 Caddy 签的 Let's Encrypt 证书，不被 CF 边缘证书遮蔽
+- 不经过 CF 边缘，不受 zone 级 SSL/TLS 加密模式和边缘缓存影响——开着代理时常见的
+  308 跳转死循环、526 证书错误都不会出现
+- 链路少一跳，DNS → 源站 → Caddy 一目了然，出问题好定位
+
+**开了代理反而会出两件事：**
+
+- DNS-01 可能签不了证书 —— `_acme-challenge` 的 TXT 记录被 CF 自己吃掉，Let's Encrypt 看不到
 - `sync-dns.sh` 改不动 A 记录 —— 代理下改的是 CF 边缘节点，源站记录不动
 
-改法：DNS 页里把橙色云点成灰色，等几秒生效。这条跟 Token 权限无关，
-**权限全给对了但云是橙的，一样签不出证书**。
+只有**确实需要隐藏源站 IP** 时才用 `add-site.sh ... --proxy`。此时源站必须有公共 CA 签发的
+有效证书，否则 CF 回源报 **526**。
+
+> 以前手动开过橙云的域名：DNS 页里把橙色云点成灰色，等几秒生效。这条跟 Token 权限无关，
+> **权限全给对了但云是橙的，一样签不出证书**。
 
 ### 在哪接入（只接一次，三个地方共用）
 
@@ -367,6 +378,9 @@ add-site.sh nas.example.com 192.168.1.10:5000
 
 # Docker 里，用 compose 服务名
 add-site.sh wiki.example.com wiki:3000
+
+# 需要隐藏源站 IP 时才开 CF 代理（默认不开，见第 2 节末尾）
+add-site.sh app.example.com 127.0.0.1:8080 --proxy
 ```
 
 脚本内部自动完成的链路：
@@ -386,7 +400,8 @@ dynamic_dns 持续保底:   Caddy 自己每 5 分钟比对，VPS 换 IP 自动�
 | 参数 | 作用 |
 |---|---|
 | `-i, --ip IP` | 手动指定源站 IP，不自动检测 |
-| `-p, --no-proxy` | Cloudflare **关闭代理**（源站 IP 会暴露，务必自己加认证） |
+| `-P, --proxy` | **开启** Cloudflare 代理（默认关闭；开了浏览器看到的是 CF 证书，且源站需有有效证书） |
+| `-p, --no-proxy` | 兼容旧写法，等同于默认行为（不开代理） |
 | `-n, --no-api-dns` | 不碰 Cloudflare，只写 Caddy 配置 |
 | `-e, --email` | 指定 LE 注册邮箱 |
 | `-d, --dns` | 强制本站 DNS-01（全局已开时不需要加） |
@@ -433,9 +448,9 @@ tail -20 /var/log/caddy-sync.log
 
 | 会发生 | 不会发生 |
 |---|---|
-| 站点短暂不可访问（Cloudflare 回源到旧 IP，报 521/502） | **证书完全不受影响** —— LE 证书绑域名不绑 IP |
-| 最多 10 分钟内 A 记录被自动改好 | 证书不会因为 IP 变化而失效或需要重签 |
-| 开了代理时 CF 缓存 ~300s，偶尔再多等几分钟 | DNS-01 续签照常成功（验证的是 TXT 记录，与 A 记录无关） |
+| 站点短暂不可访问（DNS 还指向旧 IP） | **证书完全不受影响** —— LE 证书绑域名不绑 IP |
+| 最多 10 分钟内 A 记录被自动改好，默认直连改完即生效 | 证书不会因为 IP 变化而失效或需要重签 |
+| 若自己开了代理，还要多等 CF 缓存 ~300s | DNS-01 续签照常成功（验证的是 TXT 记录，与 A 记录无关） |
 
 **要是等不及**，SSH 上去手动跑一次就行：
 
@@ -482,19 +497,26 @@ add-site.sh example.com 127.0.0.1:8080 --dns
 | `找不到 zone: xxx` | 域名没托管到 Cloudflare | `dig NS example.com` 确认 |
 | 返回 502 | 上游地址端口写错或容器没起 | VPS 上先 `curl -I 127.0.0.1:8080` 自检 |
 | 签发报 `too many certificates` | 撞 LE 周限流 | 等一周；先用 staging 调试 |
-| 域名解析到你 VPS 的 IP | Cloudflare 代理没开 | `add-site.sh` 加 `-p` 会主动关代理，或去面板开橙云 |
-| 能访问但证书不是 Let's Encrypt | CF 代理已开，正常 | 见第 9 节说明 |
+| DNS 解析直接就是 VPS 的 IP | 正常，默认就是直连（灰云） | 想改走 CF 代理：`add-site.sh ... --proxy`，或面板勾「开启 Cloudflare 代理」 |
+| 能访问但证书不是 Let's Encrypt | 有人开了 CF 代理，属预期 | 见第 9 节说明 |
+| `https://域名` 308 跳转死循环，或报 526 | 开了 CF 代理，且加密模式/源站证书不匹配 | 最省事是关掉橙云；或把 CF 加密模式改成「完全（严格）」 |
 | Caddy 起不来 | 配置语法错 | `caddy validate --config /etc/caddy/Caddyfile` |
 
 ---
 
 ## 9. 关于"证书看起来不是 LE"
 
-Cloudflare 代理打开后，浏览器到 Cloudflare 这一段用的是 **Cloudflare 自己的证书**，
-源站那份 Caddy 签的证书对浏览器不可见——这是设计如此，不是配错，安全性反而更高。
+**默认不该出现这种情况。** 默认不开 CF 代理，浏览器直连源站，拿到的就是 Caddy 签的
+Let's Encrypt 证书。看不到 LE 绿锁，说明这条记录被人手动开了代理。
 
-想让浏览器直接看到 Let's Encrypt 绿锁，就关掉代理（`-p`），但此时源站 IP 直接暴露公网，
-必须自己再上一层认证。两者是二选一。
+Cloudflare 代理打开后，浏览器到 Cloudflare 这一段用的是 **Cloudflare 自己的证书**，
+源站那份 Caddy 签的证书对浏览器不可见——这是设计如此，不是配错。
+
+两者二选一：
+
+- **要 LE 绿锁（默认）**：不开代理，代价是源站 IP 暴露在 DNS 里
+- **要隐藏源站 IP**：`add-site.sh ... --proxy` 开代理，代价是源站必须有公共 CA 签发的
+  有效证书，否则 CF 回源报 526
 
 ---
 

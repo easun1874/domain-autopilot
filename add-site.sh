@@ -12,7 +12,7 @@ EMAIL="${LE_EMAIL:-}"
 MODE="http"
 REMOVE=0
 NO_API_DNS=0
-NO_PROXY=0
+USE_PROXY=0
 USE_CNAME=0
 FIXED_IP=""
 
@@ -33,7 +33,8 @@ usage() {
   -i, --ip IP         手动指定源站 IP，默认自动检测本机公网 IP
   -c, --cname         子域建 CNAME 指向父域（默认建 A 记录）
                       警告：开了 dynamic_dns 就别用，两者会抢同一个域名
-  -p, --no-proxy      Cloudflare 不开代理（源站 IP 会暴露，需自己加认证）
+  -P, --proxy         开启 Cloudflare 代理（默认关闭，只建灰云记录直连源站）
+                      -p / --no-proxy 仍可用，等同于默认行为
   -n, --no-api-dns    只写 Caddy 配置，DNS 记录你自己去面板加
   -r, --remove        删除站点（同时删掉 Cloudflare DNS 记录）
   -h, --help          显示帮助
@@ -54,7 +55,8 @@ while [ "$#" -gt 0 ]; do
 		-e | --email) EMAIL="$2"; shift 2 ;;
 		-i | --ip) FIXED_IP="$2"; shift 2 ;;
 		-c | --cname) USE_CNAME=1; shift ;;
-		-p | --no-proxy) NO_PROXY=1; shift ;;
+		-P | --proxy) USE_PROXY=1; shift ;;
+		-p | --no-proxy) USE_PROXY=0; shift ;;   # 兼容旧写法：不开代理本就是默认
 		-n | --no-api-dns) NO_API_DNS=1; shift ;;
 		-h | --help) usage; exit 0 ;;
 		-*) err "未知参数: $1"; exit 1 ;;
@@ -83,8 +85,13 @@ fi
 # 结果是站点配置写进去了却校验不过。这里一次性载入，后面所有 caddy 调用都受益。
 if declare -F cf_load_env >/dev/null 2>&1; then cf_load_env; fi
 
-PROXIED="true"
-[ "$NO_PROXY" -eq 1 ] && PROXIED="false"
+# 默认不开 Cloudflare 代理（灰云 / 仅 DNS），理由：
+#   1) 直连源站，浏览器看到的就是 Caddy 签的 LE 证书，不被 CF 边缘证书遮蔽
+#   2) 不经过 CF 边缘，不受 zone 级 SSL/TLS 加密模式和边缘缓存影响
+#   3) 链路少一跳，DNS → 源站 → Caddy 一目了然，排错简单
+# 需要隐藏源站 IP 时才加 --proxy（此时源站必须有公共 CA 签发的有效证书，否则报 526）。
+PROXIED="false"
+if [ "$USE_PROXY" -eq 1 ]; then PROXIED="true"; fi
 
 CONF_FILE="$SITES_DIR/${DOMAIN}.conf"
 
@@ -145,8 +152,10 @@ if [ "$NO_API_DNS" -eq 0 ]; then
 			fi
 		fi
 	fi
-elif [ "$NO_PROXY" -eq 1 ]; then
-	DNS_DESC="手动 DNS，代理关闭"
+elif [ "$USE_PROXY" -eq 1 ]; then
+	DNS_DESC="手动 DNS，记得自己去开 Cloudflare 代理"
+else
+	DNS_DESC="手动 DNS，不开代理"
 fi
 
 # ---------- 生成 Caddy 站点配置 ----------
