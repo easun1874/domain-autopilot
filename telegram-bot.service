@@ -1,0 +1,32 @@
+[Unit]
+Description=domain-autopilot Telegram Bot (add sites from Telegram)
+Documentation=file:/usr/local/lib/caddy/README.md
+After=network-online.target caddy.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/lib/caddy
+# 凭据单独放一个文件，不塞进 /etc/caddy/cf.env：
+# Caddy 进程永远不需要这个 Telegram Token，混在一起只会平白扩大凭据的可见范围；
+# 而且 setup.sh 重写 cf.env 时会整个覆盖，放一起会被清掉。
+# - 前缀 = 文件缺失也照常启动（服务自己会报"缺少 Token"并退出）
+EnvironmentFile=-/etc/caddy/telegram.env
+ExecStart=/usr/bin/python3 /usr/local/lib/caddy/telegram-bot.py
+Restart=always
+RestartSec=5
+
+# 必须 root：add-site.sh 要写 /etc/caddy/sites 并 reload Caddy。
+# 权限边界靠两件事守：白名单 TELEGRAM_ALLOWED_IDS（非白名单用户不执行任何动作）
+# 与 telegram.env 的 600 权限（Token 泄露 = 别人能冒充这个机器人发指令）。
+User=root
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+# 这里故意只用 ProtectSystem=full 而不是 strict：add-site.sh 会调 caddy CLI 和
+# systemctl，strict 下整个文件系统只读，容易在 reload 那一步出现说不清的失败。
+ProtectSystem=full
+ReadWritePaths=/etc/caddy /var/cache/caddy
+
+[Install]
+WantedBy=multi-user.target

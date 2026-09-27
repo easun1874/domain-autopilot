@@ -105,9 +105,10 @@ for f in add-site.sh sync-dns.sh enable-cf-native.sh; do
 	install -m 755 "$INSTALL_DIR/$f" "/usr/local/bin/$f"
 done
 [ -f "$INSTALL_DIR/update.sh" ] && install -m 755 "$INSTALL_DIR/update.sh" /usr/local/bin/domain-autopilot-update
+[ -f "$INSTALL_DIR/telegram-bot-setup.sh" ] && install -m 755 "$INSTALL_DIR/telegram-bot-setup.sh" /usr/local/lib/caddy/telegram-bot-setup.sh
 log "cf.sh / add-site.sh / sync-dns.sh / enable-cf-native.sh 已刷新"
 
-echo "== 3/4 重装面板 =="
+echo "== 3/4 重装面板与 Telegram 机器人 =="
 if [ -f "$INSTALL_DIR/admin-api.py" ]; then
 	install -m 755 "$INSTALL_DIR/admin-api.py"  /usr/local/lib/caddy/admin-api.py
 	install -m 644 "$INSTALL_DIR/admin-ui.html" /usr/local/lib/caddy/admin-ui.html
@@ -118,12 +119,29 @@ if [ -f "$INSTALL_DIR/admin-api.py" ]; then
 	log "面板已刷新并重启"
 fi
 
+# 机器人只在装过的机器上刷新 —— 没装的机器别凭空多出一个服务
+if [ -f "$INSTALL_DIR/telegram-bot.py" ]; then
+	install -m 755 "$INSTALL_DIR/telegram-bot.py" /usr/local/lib/caddy/telegram-bot.py
+	if systemctl list-unit-files 2>/dev/null | grep -q '^telegram-bot\.service'; then
+		[ -f "$INSTALL_DIR/telegram-bot.service" ] \
+			&& install -m 644 "$INSTALL_DIR/telegram-bot.service" /etc/systemd/system/telegram-bot.service
+		systemctl daemon-reload >/dev/null 2>&1 || true
+		systemctl restart telegram-bot >/dev/null 2>&1 || true
+		log "Telegram 机器人已刷新并重启"
+	else
+		info "未安装 Telegram 机器人，跳过。要装：bash /usr/local/lib/caddy/telegram-bot-setup.sh"
+	fi
+fi
+
 if [ "$DO_SETUP" -eq 0 ]; then
 	log "按 --no-setup 要求跳过 setup.sh"
 else
 	echo "== 4/4 重跑 setup.sh（幂等，不会动已有站点和 Token）=="
 	# cf.env 里已有 Token 就够用，不用再传；setup.sh 会自己复用
-	if bash "$INSTALL_DIR/setup.sh"; then
+	# INSTALL_TELEGRAM=0：机器人已在第 3 步刷新过，这里别再交互问一遍，
+	# 免得 domain-autopilot-update 从 TTY 跑时每次都被拦一下。
+	# 想装机器人：bash /usr/local/lib/caddy/telegram-bot-setup.sh
+	if INSTALL_TELEGRAM=0 bash "$INSTALL_DIR/setup.sh"; then
 		log "setup.sh 执行完毕"
 	else
 		err "setup.sh 报错，看上面输出"

@@ -8,6 +8,8 @@
 #
 # 可调环境变量：
 #   INSTALL_PANEL=0        不装管理面板（默认 1）
+#   INSTALL_TELEGRAM=0     不装 Telegram 机器人；=1 或给 TELEGRAM_BOT_TOKEN 则非交互安装
+#                          （默认 auto：交互环境下问一句，回车跳过）
 #   ENABLE_CF_NATIVE=0     不自动打开 Caddy 原生 Cloudflare 集成（默认 auto=有 Token 就开）
 set -euo pipefail
 
@@ -208,6 +210,48 @@ else
 	fi
 fi
 
+echo "== 附加：Telegram 机器人（可选，不需要就跳过）=="
+# 不编进 1/9~9/9 的编号里 —— 加序号就得改一堆提示文字，这里作为可选附加步骤，
+# 回车跳过完全不影响前面 9 步的结果。
+BOT_STATE="未安装"
+if [ "${INSTALL_TELEGRAM:-auto}" = "0" ]; then
+	info "按 INSTALL_TELEGRAM=0 跳过"
+elif [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+	info "检测到 TELEGRAM_BOT_TOKEN，非交互安装"
+	if bash "$SCRIPT_DIR/telegram-bot-setup.sh"; then
+		BOT_STATE="已安装"
+	else
+		BOT_STATE="安装失败"
+		err "Telegram 机器人没装成，其余功能不受影响。随时重跑：bash $SCRIPT_DIR/telegram-bot-setup.sh"
+	fi
+elif [ -s /etc/caddy/telegram.env ]; then
+	info "检测到已配置过（/etc/caddy/telegram.env），刷新程序并重启"
+	if bash "$SCRIPT_DIR/telegram-bot-setup.sh"; then
+		BOT_STATE="已安装"
+	else
+		BOT_STATE="刷新失败"
+		err "看：journalctl -u telegram-bot -n 50"
+	fi
+elif [ -t 0 ]; then
+	echo
+	info "用 Telegram 加站点：发一句 /add 就能建站，不用开 SSH 隧道去开面板"
+	echo "  要先在 Telegram 里找 @BotFather 建一个 bot 拿 Token（发 /newbot）"
+	read -rp "  现在配置吗？[y/N] " ANS_BOT || true
+	case "${ANS_BOT:-}" in
+		[Yy]*)
+			if bash "$SCRIPT_DIR/telegram-bot-setup.sh"; then
+				BOT_STATE="已安装"
+			else
+				BOT_STATE="安装失败"
+				err "没装成，其余功能不受影响。随时重跑：bash $SCRIPT_DIR/telegram-bot-setup.sh"
+			fi
+			;;
+		*) info "跳过。以后想要：bash $SCRIPT_DIR/telegram-bot-setup.sh" ;;
+	esac
+else
+	info "非交互环境，跳过。要装：TELEGRAM_BOT_TOKEN=xxx bash telegram-bot-setup.sh"
+fi
+
 echo
 echo "==================== 部署完成 ===================="
 cat <<EOF
@@ -224,7 +268,12 @@ cat <<EOF
   domain-autopilot-update --check    # 先看有没有新版
   domain-autopilot-update
 
+Telegram 机器人（$BOT_STATE）：
+  在 Telegram 里发 /add 就能加站点（会一步步问域名和上游）
+  bash /usr/local/lib/caddy/telegram-bot-setup.sh --status    # 看配置和服务状态
+  bash /usr/local/lib/caddy/telegram-bot-setup.sh             # 重跑 = 换 Token / 改白名单
+
 自检：
   bash /usr/local/lib/caddy/cf.sh check      # Cloudflare API 连通性
-  systemctl status caddy admin-api --no-pager
+  systemctl status caddy admin-api telegram-bot --no-pager
 EOF

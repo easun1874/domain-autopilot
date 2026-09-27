@@ -24,22 +24,57 @@ jobs:
         run: shellcheck --severity=error *.sh
 
       - name: Python 编译检查
-        run: python3 -m py_compile admin-api.py
+        run: python3 -m py_compile admin-api.py telegram-bot.py
+
+      - name: 机器人输入校验（域名 / 上游必须拦住脏输入）
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          spec = importlib.util.spec_from_file_location("bot", "telegram-bot.py")
+          bot = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(bot)
+
+          # 合法上游：host:port / scheme://host:port / unix socket
+          for u in ["127.0.0.1:8080", "http://127.0.0.1:8080", "wiki:3000",
+                    "https://backend.example.com", "[::1]:8080", "unix//run/app.sock"]:
+              assert bot.valid_upstream(u), "应接受的上游被拒了: %s" % u
+
+          # 脏输入：带路径、结尾斜杠、没端口、端口越界 —— 这些都会让 caddy adapt 失败
+          for u in ["http://127.0.0.1:8080/", "127.0.0.1:8080/api", "127.0.0.1",
+                    "", "1.2.3.4:99999", "a b:1", "http://h:80/x"]:
+              assert not bot.valid_upstream(u), "应拒绝的上游被接受了: %r" % u
+
+          for d in ["oci.example.com", "a-b.c.example.com"]:
+              assert bot.RE_DOMAIN.match(d), "应接受的域名被拒了: %s" % d
+          for d in ["oci", "http://oci.example.com", "oci.example.com/", "-bad.com",
+                    "a..b.com", "oc i.com", "../etc/passwd"]:
+              assert not bot.RE_DOMAIN.match(d), "应拒绝的域名被接受了: %s" % d
+
+          assert bot.validate("oci.example.com", "127.0.0.1:8080") is None
+          assert bot.validate("../etc/passwd", "127.0.0.1:8080") is not None
+          print("机器人输入校验：全部通过")
+          PY
 
       - name: 交付物完整性
         run: |
           missing=0
           for f in LICENSE README.md Caddyfile admin-api.py admin-ui.html \
                    admin-api.service bootstrap.sh setup.sh deploy.sh update.sh \
-                   add-site.sh cf.sh sync-dns.sh enable-cf-native.sh docs/index.html; do
+                   add-site.sh cf.sh sync-dns.sh enable-cf-native.sh docs/index.html \
+                   telegram-bot.py telegram-bot.service telegram-bot-setup.sh; do
             if [ -f "$f" ]; then echo "  ok   $f"; else echo "  MISS $f"; missing=1; fi
           done
           [ "$missing" -eq 0 ] || { echo "有文件缺失"; exit 1; }
 
       - name: 敏感文件不应入库
         run: |
-          ! git ls-files | grep -E '(^|/)(cf\.env|\.cf_token)(\..*)?$'
+          ! git ls-files | grep -E '(^|/)(cf\.env|telegram\.env|\.cf_token)(\..*)?$'
           echo "未发现被跟踪的凭据文件"
+          if git grep -nE 'TELEGRAM_BOT_TOKEN=[0-9]{5,}:[A-Za-z0-9_-]{30,}' -- . \
+               ':!README.md' ':!*.sh'; then
+            echo "有真实的 Telegram Bot Token 被写进了代码"; exit 1
+          fi
+          echo "未发现硬编码的 Bot Token"
 
   smoke:
     name: 面板 API 冒烟测试

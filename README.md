@@ -1,6 +1,6 @@
 # domain-autopilot
 
-**一台 VPS，无限 HTTPS 站点。加站点只用一行命令。**
+**一台 VPS，无限 HTTPS 站点。加站点只用一行命令 —— 或者在 Telegram 里发一句话。**
 
 [![CI](https://github.com/easun1874/domain-autopilot/actions/workflows/ci.yml/badge.svg)](https://github.com/easun1874/domain-autopilot/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -10,12 +10,10 @@
 
 项目主页源文件：`docs/index.html`（浏览器直接打开即可，无需服务器）
 
-> **关于私有仓库**：本仓库以私有形式托管，项目主页不对外发布。
-> GitHub Pages 在私有仓库下需要 Pro / Team 订阅才能启用，因此 `docs/index.html`
-> 直接用浏览器打开即可，不走 Pages。
-> 另外要注意：即便付费开通，Pages 生成的站点本身也是公开的——本项目的主页定位是
-> 自用文档，没有公开托管的必要。
-> CI（语法检查、面板冒烟测试）在私有仓库下照常运行，不受影响。
+> **发布形态**：本仓库公开托管（MIT）。安装与更新走匿名下载，不需要任何 GitHub
+> Token。项目主页源文件 `docs/index.html` 用浏览器直接打开即可，无需服务器；
+> GitHub Pages 未启用——这个主页的定位是自用文档，没有公开托管的必要。
+> CI 会跑语法检查、面板冒烟测试和「敏感文件不入库」，公开仓库下照常运行。
 
 ---
 
@@ -347,6 +345,9 @@ domain-autopilot-update --no-reload # 更新完不重载 Caddy
 | 8 | 打开原生 CF 集成 | `-y` 自动跑 `enable-cf-native.sh`，缺模块则降级 |
 | 9 | 装管理面板 | `admin-api.service` 常驻，监听 127.0.0.1:8848 |
 
+跑完这 9 步，还会**问一句要不要装 Telegram 机器人**（第 16 节）。回车跳过就行，
+不影响前面任何一步；装了的机器人是独立的 `telegram-bot.service`，和面板互不依赖。
+
 ### 3.4 部署后访问面板
 
 ```bash
@@ -382,6 +383,9 @@ add-site.sh wiki.example.com wiki:3000
 # 需要隐藏源站 IP 时才开 CF 代理（默认不开，见第 2 节末尾）
 add-site.sh app.example.com 127.0.0.1:8080 --proxy
 ```
+
+> 不想敲命令、也不想开 SSH 隧道进面板？装了第 16 节的 Telegram 机器人后，
+> 在手机上发一句 `/add app.example.com 127.0.0.1:8080` 就完事了。
 
 脚本内部自动完成的链路：
 
@@ -667,6 +671,9 @@ journalctl -u caddy -n 50 --no-pager      # 看有没有 CF API 报错
 | `admin-api.py` | 管理面板后端，纯标准库，默认只监听 127.0.0.1:8848 |
 | `admin-ui.html` | 管理面板前端，单文件，无构建步骤 |
 | `admin-api.service` | 面板的 systemd 单元，含 `ProtectSystem=strict` 等加固 |
+| `telegram-bot.py` | 【VPS】 | Telegram 机器人，纯标准库长轮询，白名单鉴权。只调 `add-site.sh`，不自己实现逻辑 |
+| `telegram-bot.service` | 机器人的 systemd 单元，凭据走 `/etc/caddy/telegram.env`（600） |
+| `telegram-bot-setup.sh` | 【VPS】 | 装/改机器人：隐藏输入 Token、自动探测你的 Telegram ID、写配置、装单元。可重复跑 |
 
 ---
 
@@ -765,3 +772,100 @@ python3 admin-api.py --mock     # 演示模式，数据是假的
 | GET | `/api/certs` | 证书到期列表 |
 | POST | `/api/refresh` | 跑一次 `sync-dns.sh --check` |
 | GET | `/api/config` | 读 Caddyfile |
+
+---
+
+## 16. Telegram 机器人（用手机加站点）
+
+面板只监听回环地址（第 15 节讲了为什么），所以每次想看它都得先开 SSH 隧道。
+但日常其实只有一件事——**加个站点**。那就没必要为了这个去开隧道：
+在 Telegram 里发一句 `/add 域名 上游` 就够了。
+
+机器人是**可选**的，和面板互不依赖，装与不装都不影响其它功能。
+
+### 16.1 建一个 bot 拿 Token（一次性，1 分钟）
+
+1. Telegram 里搜 **@BotFather**，发 `/newbot`
+2. 起个显示名，再起个用户名（必须以 `bot` 结尾，全局唯一）
+3. BotFather 回你一串形如 `123456789:AAE-xxxxxxxx` 的 Token，复制下来
+
+> ⚠️ **一个 Token 只能有一个进程在轮询。** 别和已有机器人共用同一个 bot
+> （两边同时 `getUpdates` 会互相抢消息，日志里报 `409 Conflict`）。
+> 专门新建一个最省事。
+
+### 16.2 安装
+
+VPS 上，root：
+
+```bash
+bash /usr/local/lib/caddy/telegram-bot-setup.sh
+```
+
+脚本会做四件事：
+
+1. **隐藏输入**问你 Token（`read -s`，不进 shell 历史、不进进程列表、不回显）
+2. 拿 `getMe` 验一遍，告诉你机器人叫什么，Token 抄错当场就能发现
+3. 让你去给机器人发一句话，它**自动探测出你的 Telegram 用户 ID** 并填进白名单——
+   不用去别处查 ID，也不用先手动开权限
+4. 写配置（600）→ 装文件与 systemd 单元 → 启动 → 打印用法
+
+非交互安装（Token 走环境变量，同样不进 argv）：
+
+```bash
+TELEGRAM_BOT_TOKEN=123456789:AAE-xxx TELEGRAM_ALLOWED_IDS=123456789 \
+  bash /usr/local/lib/caddy/telegram-bot-setup.sh
+```
+
+### 16.3 怎么用
+
+| 命令 | 作用 |
+|---|---|
+| `/add` | 交互式：先问域名 → 再问上游 → 回显确认（带按钮）→ 执行 |
+| `/add app.example.com 127.0.0.1:8080` | 一行写完，直接进确认 |
+| `/list` | 列出现有站点（域名 / 上游 / 签发方式） |
+| `/cancel` | 放弃当前这次添加 |
+| `/help` | 用法 |
+
+加完之后它会自己等证书签发，然后回报**源站真实状态码**：
+
+| 回报 | 含义 |
+|---|---|
+| `✅ 站点已就绪` | 证书签下来了，源站应答 2xx/3xx |
+| `🟡 上游连不上`（502/503） | Caddy 和证书都好，是上游那个服务没在跑 |
+| `🟡 HTTPS 还没起来` | 等了 ~45 秒还没拿到有效响应：证书还在签，或域名没指向这台机器 |
+
+### 16.4 它做了什么、没做什么
+
+**做**：把「域名 + 上游」拼成 `add-site.sh <域名> <上游>` 去调它（子进程用参数列表，
+不拼 shell 字符串，域名和上游都做了严格校验）。
+
+**不做**：不碰 Caddyfile、不自己调 Cloudflare API、不重写任何业务逻辑。
+它和网页面板走**完全相同的路径**——所以 `add-site.sh` 的行为一变，机器人和面板同时跟着变，
+不会出现两边不一致。
+
+### 16.5 安全
+
+- **白名单**：只有 `TELEGRAM_ALLOWED_IDS` 里的用户能操作。非白名单用户发消息，
+  机器人只回他自己的 ID（方便首次配置），**不执行任何动作**。
+- **Token 存 `/etc/caddy/telegram.env`（600）**，与 Cloudflare Token 分开存放——
+  Caddy 进程永远不需要这个 Token，混在一起只会平白扩大凭据的可见范围。
+- **Token 泄露 = 别人能冒充你的机器人发指令**。别贴群、别提交进仓库
+  （仓库的 CI 有一道"敏感文件不应入库"的检查）。
+- 服务以 **root** 运行（`add-site.sh` 要写 `/etc/caddy/sites` 并 reload Caddy）。
+  权限边界靠白名单 + 文件权限守；单元里另有 `ProtectSystem=full` / `ProtectHome` / `PrivateTmp`。
+  这里故意没用 `strict`：机器人会调 `caddy` CLI 和 `systemctl`，`strict` 下容易在 reload
+  那一步出现说不清的失败。
+- 想临时停：`systemctl stop telegram-bot`。彻底卸载：
+  `bash /usr/local/lib/caddy/telegram-bot-setup.sh --uninstall`（保留 `telegram.env`，里面有你的 Token）。
+
+### 16.6 排错
+
+| 现象 | 原因 / 处理 |
+|---|---|
+| 发消息没反应 | `systemctl status telegram-bot`；`journalctl -u telegram-bot -n 50` |
+| 回你「⛔ 无权限」 | 你的 ID 不在白名单。把回显的那个 ID 加进 `telegram.env`，再 `systemctl restart telegram-bot` |
+| 日志报 `409 Conflict` | 同一个 Token 被两个进程轮询了（多半是和别的机器人共用了一个 bot） |
+| 启动就退出，说 Token 无效 | Token 抄错了；或 VPS 出不了网：`curl -s https://api.telegram.org` |
+| 显示添加成功但网页打不开 | 机器人回报的状态码就是线索：502 = 上游服务没在跑；其它非 2xx 去查上游日志 |
+| 换 Token / 改白名单 | 重跑 `telegram-bot-setup.sh`（幂等），或改 `telegram.env` 后 restart |
+
