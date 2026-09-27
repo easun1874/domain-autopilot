@@ -413,6 +413,46 @@ add-site.sh app.example.com 127.0.0.1:8080 --proxy
 `add-site.sh` 已内置防护：上游里出现本机公网 IP、**且本机确实有进程在监听该端口**时，
 自动改写成 `127.0.0.1` 并提示；服务不在本机时保持原样，不会误伤。
 
+### 反代别的机器上的服务（跨 VPS）
+
+上游写对方的地址就行。那道自动改写**不会碰跨机上游** —— 它只在本机公网 IP + 本机确有
+监听时才触发，指向别的机器一律原样保留。
+
+```bash
+# 对方 VPS 的公网 IP
+add-site.sh api.example.com http://198.51.100.7:8080
+
+# 同一 VPC / 内网互通，走内网更好（更快，且不必对公网开端口）
+add-site.sh api.example.com http://10.0.0.9:8080
+
+# 对方也用本工具部署过 -> 直接反代它的 HTTPS，最干净
+add-site.sh api.example.com https://api.other.example.com
+```
+
+**加之前先在 VPS 上验一遍通不通**，Caddy 连不上只会给你 502，不会告诉你原因：
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' --max-time 5 http://198.51.100.7:8080/
+```
+
+三个容易踩的点：
+
+1. **对方机器那个端口得真的开着，且对方安全列表要放行你的 VPS**。能收窄来源就收窄，
+   别放行全网 —— 云控制台一般支持「源 = 你的 VPS 公网 IP」。
+2. **优先走内网或隧道**。同 VPC 用私网 IP；没有内网互通就组 WireGuard，比把后端端口
+   摊在公网上强得多。
+3. **对方是自签 HTTPS 时会校验失败**。要么让对方上真证书，要么在该站点的 conf 里关掉校验：
+
+```caddyfile
+reverse_proxy https://<对方> {
+	transport http {
+		tls_insecure_skip_verify
+	}
+}
+```
+
+   但这等于放弃证书校验，公网链路上不推荐 —— 能上真证书就上。
+
 脚本内部自动完成的链路：
 
 ```
