@@ -212,7 +212,7 @@ else
 fi
 
 # ---------- 4. 完整性检查 ----------
-REQUIRED="Caddyfile cf.sh add-site.sh sync-dns.sh enable-cf-native.sh setup.sh admin-api.py admin-ui.html admin-api.service"
+REQUIRED="Caddyfile cf.sh add-site.sh sync-dns.sh enable-cf-native.sh install-caddy-modules.sh node-agent.sh setup.sh admin-api.py admin-ui.html admin-api.service"
 MISSING=0
 for f in $REQUIRED; do
 	[ -f "$INSTALL_DIR/$f" ] || { err "缺失文件：$f"; MISSING=1; }
@@ -247,8 +247,15 @@ cd "$INSTALL_DIR"
 SETUP_ENV=""
 if [ -n "$CF_TOKEN_INPUT" ]; then
 	tmp_token="$(mktemp /root/.cf_token.XXXXXX)"
+	# ⚠️ umask 只在这几行内生效，写完立刻还原。
+	# 这里踩过一个狠坑：umask 077 会**继承给后面 exec 出去的 setup.sh**，让它
+	# 建出来的目录和文件全是 700/600 —— 包括 /etc/caddy 和 /etc/caddy/sites。
+	# 而 Caddy 是以 caddy 用户运行的，读不到自己的 Caddyfile，服务直接
+	# permission denied 起不来。（mktemp 本身就已经给 600，这行只是双保险。）
+	OLD_UMASK="$(umask)"
 	umask 077
 	printf '%s' "$CF_TOKEN_INPUT" > "$tmp_token"
+	umask "$OLD_UMASK"
 	SETUP_ENV="CF_TOKEN_FILE=$tmp_token"
 	log "Cloudflare Token 已写入临时文件（装完即删，不进命令行）"
 fi

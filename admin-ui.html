@@ -69,11 +69,11 @@ tr:last-child td{border-bottom:0}
 .days{font-weight:500}
 .days.ok{color:var(--teal)} .days.warn{color:var(--amber)} .days.bad{color:var(--red)}
 label{display:block; font-size:12px; color:var(--muted); margin:10px 0 4px}
-input[type=text],input[type=password]{
+input[type=text],input[type=password],select{
   width:100%; font:inherit; font-size:13px; padding:7px 10px; border-radius:8px;
   border:1px solid var(--line); background:#FFF; color:var(--text);
 }
-input[type=text]:focus,input[type=password]:focus{outline:none; border-color:var(--blue)}
+input[type=text]:focus,input[type=password]:focus,select:focus{outline:none; border-color:var(--blue)}
 .checks{display:flex; flex-direction:column; gap:6px; margin-top:10px}
 .chk{display:flex; align-items:center; gap:7px; font-size:13px; color:var(--text)}
 .chk input{margin:0}
@@ -127,7 +127,50 @@ summary{cursor:pointer; font-size:13px; color:var(--muted)}
 
     <div>
       <div class="card">
+        <h2>节点 <span id="nodeHint" class="hint"></span></h2>
+        <div id="nodeList"></div>
+
+        <details>
+          <summary>添加节点（纳管另一台 VPS）</summary>
+          <div style="margin-top:6px">
+            <label for="nName">节点名</label>
+            <input type="text" id="nName" placeholder="chuncheon">
+            <label for="nHost">主机（IP 或域名）</label>
+            <input type="text" id="nHost" placeholder="203.0.113.9">
+            <div style="display:flex;gap:8px">
+              <div style="flex:1">
+                <label for="nPort">SSH 端口</label>
+                <input type="text" id="nPort" placeholder="22">
+              </div>
+              <div style="flex:1">
+                <label for="nUser">SSH 用户</label>
+                <input type="text" id="nUser" placeholder="root">
+              </div>
+            </div>
+            <div class="row"><button id="btnNodeAdd" class="primary">添加节点</button></div>
+            <div class="out" id="nodeOut"></div>
+          </div>
+        </details>
+      </div>
+
+      <div class="card">
+        <h2>节点公钥</h2>
+        <pre id="pubKey" style="max-height:110px">读取中…</pre>
+        <div class="hint">把下面这块整段贴到目标机器的 root shell 里跑一次，面板就能纳管它。
+          命令里带了 <code>command=</code> 限制 —— 这把钥匙在那台机器上只能干「列站点 / 加站点 /
+          删站点 / 读证书」四件事，别的命令一律拒绝。所以即使面板被攻破，也升不了权。</div>
+        <pre id="pubCmd" style="max-height:220px">读取中…</pre>
+        <div class="row"><button id="btnCopyCmd">复制授权命令</button></div>
+      </div>
+
+      <div class="card">
         <h2>添加站点</h2>
+        <label for="fNode">目标节点</label>
+        <select id="fNode"></select>
+        <div class="hint">站点加在选中的那台机器上，证书也在那台上签。要让某台机器上
+          「只绑 127.0.0.1」的服务（比如各类面板）有 HTTPS，就得选它自己那台 ——
+          从别的机器反代是连不进去的。</div>
+
         <label for="fDomain">域名</label>
         <input type="text" id="fDomain" placeholder="app.example.com">
         <label for="fUpstream">上游地址</label>
@@ -143,6 +186,19 @@ summary{cursor:pointer; font-size:13px; color:var(--muted)}
         </div>
         <label for="fIp">源站 IP（留空自动检测，通常不用填）</label>
         <input type="text" id="fIp" placeholder="留空即可">
+
+        <details>
+          <summary>给这个站点加访问密码（暴露公网时必填）</summary>
+          <div style="margin-top:6px">
+            <label for="fAuthUser">用户名</label>
+            <input type="text" id="fAuthUser" placeholder="admin" autocomplete="off">
+            <label for="fAuthPass">密码</label>
+            <input type="password" id="fAuthPass" placeholder="只用于本次添加，面板不留存"
+                   autocomplete="new-password">
+            <div class="hint">Caddy 用 bcrypt 存 hash，明文密码不落盘。面板 / 后台这类东西
+              放在公网上时，不填这一项就等于把控制权挂出去了。</div>
+          </div>
+        </details>
 
         <div class="row">
           <button id="btnAdd" class="primary">添加</button>
@@ -244,7 +300,7 @@ function renderSites(sites, records) {
   }
   $("siteCount").textContent = "共 " + sites.length + " 个";
 
-  let html = '<table><thead><tr><th>域名</th><th>CF 记录</th><th>证书</th><th></th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>域名</th><th>节点</th><th>CF 记录</th><th>证书</th><th></th></tr></thead><tbody>';
   sites.forEach(s => {
     const rec = recMap[s.domain];
     let dnsCell = '<span class="tag off">无记录</span>';
@@ -260,12 +316,20 @@ function renderSites(sites, records) {
       certCell = '<span class="days ' + daysClass(s.certDays) + '">' + s.certDays + ' 天</span>';
     }
 
+    const node = s.node || "local";
+    const nodeTag = node === "local"
+      ? '<span class="tag">本机</span>'
+      : '<span class="tag on">' + node + '</span>';
+
     html += '<tr>'
       + '<td><div class="dom">' + s.domain + '</div><div class="up">' + s.upstream + '</div>'
-      + (s.dns01 ? '<span class="tag on">DNS-01</span>' : '') + '</td>'
+      + (s.dns01 ? '<span class="tag on">DNS-01</span>' : '')
+      + (s.auth ? '<span class="tag on">已加密码</span>' : '') + '</td>'
+      + '<td>' + nodeTag + '</td>'
       + '<td>' + dnsCell + '</td>'
       + '<td>' + certCell + '</td>'
-      + '<td style="text-align:right"><button class="danger" data-del="' + s.domain + '">删除</button></td>'
+      + '<td style="text-align:right"><button class="danger" data-del="' + s.domain
+      + '" data-node="' + node + '">删除</button></td>'
       + '</tr>';
   });
   html += '</tbody></table>';
@@ -274,9 +338,12 @@ function renderSites(sites, records) {
   document.querySelectorAll("[data-del]").forEach(btn => {
     btn.onclick = async () => {
       const d = btn.getAttribute("data-del");
-      if (!confirm("删除站点 " + d + "？\n会同时删掉 Cloudflare 里的 DNS 记录。")) return;
+      const n = btn.getAttribute("data-node") || "local";
+      const where = n === "local" ? "本机" : ("节点 " + n);
+      if (!confirm("在" + where + "上删除站点 " + d + "？\n会同时删掉 Cloudflare 里的 DNS 记录。")) return;
       btn.disabled = true;
-      const r = await api("/api/sites/" + encodeURIComponent(d), {method: "DELETE"});
+      const r = await api("/api/sites/" + encodeURIComponent(d) + "?node=" + encodeURIComponent(n),
+        {method: "DELETE"});
       showOut(r.output || r.error || JSON.stringify(r), r.ok ? "ok" : "err");
       await loadAll();
     };
@@ -406,6 +473,138 @@ $("btnTgSave").onclick = async () => {
   if (r.state) renderTgStatus(r.state);
 };
 
+// ---------------- 节点（多机纳管） ----------------
+
+const NODE_OPTS = 'command="/usr/local/bin/domain-autopilot-node",no-port-forwarding,'
+  + 'no-agent-forwarding,no-X11-forwarding,no-pty';
+
+function nodeShowOut(t, k) {
+  const el = $("nodeOut");
+  el.textContent = t || "";
+  el.className = "out show" + (k ? " " + k : "");
+}
+
+// 拼「在目标机器上授权本面板」的一整块命令。key 与 options 都先落成变量，
+// 避免和 shell 引号打架。
+function installBlock(pub) {
+  return [
+    "KEY='" + pub + "'",
+    "OPTS='" + NODE_OPTS + "'",
+    "mkdir -p /root/.ssh && chmod 700 /root/.ssh",
+    "touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys",
+    'grep -qF "$KEY" /root/.ssh/authorized_keys || echo "$OPTS $KEY" >> /root/.ssh/authorized_keys'
+  ].join("\n");
+}
+
+function renderNodes(nodes, reports) {
+  const rep = {};
+  (reports || []).forEach(r => { rep[r.name] = r; });
+  if (!nodes || !nodes.length) {
+    $("nodeList").innerHTML = '<div class="empty">没有节点</div>';
+    return;
+  }
+  let html = '<table><tbody>';
+  nodes.forEach(n => {
+    const r = rep[n.name];
+    let state = '<span class="tag">—</span>';
+    if (n.local) state = '<span class="tag on">本机</span>';
+    else if (r && r.ok) state = '<span class="tag on">通 · ' + r.count + ' 个站点</span>';
+    else if (r && r.error) state = '<span class="tag off">够不着</span>';
+    const addr = n.local ? "127.0.0.1" : (n.host + ":" + (n.port || 22));
+    html += '<tr><td><div class="dom">' + n.name + '</div><div class="up">' + addr + '</div></td>'
+      + '<td>' + state + '</td>'
+      + '<td style="text-align:right;white-space:nowrap">'
+      + (n.local ? '' : '<button data-test="' + n.name + '">检测</button> ')
+      + (n.local ? '' : '<button class="danger" data-node-del="' + n.name + '">移除</button>')
+      + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  $("nodeList").innerHTML = html;
+
+  document.querySelectorAll("[data-test]").forEach(b => {
+    b.onclick = async () => {
+      b.disabled = true;
+      nodeShowOut("检测中…");
+      const r = await api("/api/nodes/" + encodeURIComponent(b.getAttribute("data-test")) + "/test",
+        {method: "POST"});
+      b.disabled = false;
+      if (r.ok && r.info) {
+        const i = r.info;
+        nodeShowOut("节点可达 · Caddy " + (i.caddy || "?") + " " + (i.version || "")
+          + " · 主机 " + (i.hostname || "?") + " · 站点 " + (i.sites || 0), "ok");
+      } else {
+        nodeShowOut("够不着：" + (r.error || "未知原因")
+          + "\n排查顺序：网络是否可达 → 端口对不对 → 公钥授权命令跑过没有 → "
+          + "对方是否装了 domain-autopilot（有没有 /usr/local/bin/domain-autopilot-node）。", "err");
+      }
+      await loadAll();
+    };
+  });
+
+  document.querySelectorAll("[data-node-del]").forEach(b => {
+    b.onclick = async () => {
+      const name = b.getAttribute("data-node-del");
+      if (!confirm("从面板移除节点 " + name + "？\n它上面的站点会照常运行，只是面板不再管。")) return;
+      b.disabled = true;
+      const r = await api("/api/nodes/" + encodeURIComponent(name), {method: "DELETE"});
+      nodeShowOut(r.output || r.error || JSON.stringify(r), r.ok ? "ok" : "err");
+      await loadAll();
+    };
+  });
+}
+
+function renderNodeSelect(nodes) {
+  const sel = $("fNode");
+  const cur = sel.value;
+  sel.innerHTML = (nodes || []).map(n =>
+    '<option value="' + n.name + '">' + n.name + (n.local ? "（本机）" : " — " + n.host) + '</option>'
+  ).join("");
+  if (cur) sel.value = cur;
+}
+
+async function loadNodes() {
+  try {
+    const r = await api("/api/nodes");
+    const pub = r.publicKey || "";
+    $("pubKey").textContent = pub || "(拿不到公钥 —— 检查 /etc/caddy 是否可写)";
+    $("pubCmd").textContent = pub ? installBlock(pub)
+      : "先在目标机器上装一次 domain-autopilot，再回面板刷新。";
+    $("nodeHint").textContent = "共 " + (r.nodes || []).length + " 个";
+    renderNodeSelect(r.nodes || []);
+    return r.nodes || [];
+  } catch (e) {
+    $("nodeList").innerHTML = '<div class="empty">读不到节点</div>';
+    return [];
+  }
+}
+
+$("btnNodeAdd").onclick = async () => {
+  const body = {
+    name: $("nName").value.trim(),
+    host: $("nHost").value.trim(),
+    port: $("nPort").value.trim() || 22,
+    user: $("nUser").value.trim() || "root"
+  };
+  if (!body.name || !body.host) { nodeShowOut("节点名和主机地址都要填", "err"); return; }
+  $("btnNodeAdd").disabled = true;
+  const r = await api("/api/nodes", {method: "POST", body: JSON.stringify(body)});
+  $("btnNodeAdd").disabled = false;
+  if (!r.ok) { nodeShowOut(r.error || JSON.stringify(r), "err"); return; }
+  $("nName").value = ""; $("nHost").value = ""; $("nPort").value = "";
+  await loadAll();
+  nodeShowOut((r.output || "已添加") + "\n\n下一步：把「节点公钥」里那段命令拿到 "
+    + body.host + " 上用 root 跑一次，然后回来点「检测」。", "ok");
+};
+
+$("btnCopyCmd").onclick = async () => {
+  try {
+    await navigator.clipboard.writeText($("pubCmd").textContent);
+    nodeShowOut("已复制授权命令", "ok");
+  } catch (e) {
+    nodeShowOut("浏览器不允许自动复制，手动选中上面那段吧", "err");
+  }
+};
+
 async function loadAll() {
   $("btnRefresh").disabled = true;
   try {
@@ -413,9 +612,12 @@ async function loadAll() {
     renderBadges(st);
     renderBanners(st);
 
+    const nodes = await loadNodes();
+
     const sr = await api("/api/sites");
     const dr = await api("/api/dns");
     renderSites(sr.sites || [], dr.records || []);
+    renderNodes(nodes, sr.nodes || []);
 
     const cr = await api("/api/certs");
     renderCerts(cr.certs || []);
@@ -441,15 +643,21 @@ $("btnAdd").onclick = async () => {
     body: JSON.stringify({
       domain: domain,
       upstream: upstream,
+      node: $("fNode").value || "local",
       dns01: $("fDns01").checked,
       useProxy: $("fUseProxy").checked,
       noApiDns: $("fNoApiDns").checked,
-      ip: $("fIp").value.trim() || null
+      ip: $("fIp").value.trim() || null,
+      authUser: $("fAuthUser").value.trim() || null,
+      authPass: $("fAuthPass").value || null
     })
   });
   showOut(r.output || r.error || JSON.stringify(r), r.ok ? "ok" : "err");
   $("btnAdd").disabled = false;
-  if (r.ok) { $("fDomain").value = ""; $("fUpstream").value = ""; $("fIp").value = ""; }
+  if (r.ok) {
+    $("fDomain").value = ""; $("fUpstream").value = ""; $("fIp").value = "";
+    $("fAuthUser").value = ""; $("fAuthPass").value = "";
+  }
   await loadAll();
 };
 

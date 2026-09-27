@@ -30,6 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 log()  { printf '\033[32m[ok]\033[0m %s\n' "$*"; }
 info() { printf '\033[36m[--]\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m[!!]\033[0m %s\n' "$*" >&2; }
 err()  { printf '\033[31m[!!]\033[0m %s\n' "$*" >&2; }
 
 if [ "$(id -u)" -ne 0 ]; then err "请用 root 执行：sudo -i 然后 bash setup.sh"; exit 1; fi
@@ -65,6 +66,21 @@ elif install_caddy && command -v caddy >/dev/null 2>&1; then
 else
 	err "Caddy 安装失败。请手动安装后重跑：https://caddyserver.com/docs/install"
 	exit 1
+fi
+
+# apt 装出来的是标准版，不含 dns.providers.cloudflare —— 于是 DNS-01（不占 80 端口、
+# 可签泛域名）和 dynamic_dns（IP 漂移自动改记录）都开不起来。这里换成带模块的官方
+# 构建。脚本自身是幂等的：已经是模块版就跳过。想自己控制就设 SKIP_CADDY_MODULES=1。
+echo "== 1b/9 确保 Caddy 带 Cloudflare 模块 =="
+if [ "${SKIP_CADDY_MODULES:-0}" = "1" ]; then
+	info "按 SKIP_CADDY_MODULES=1 跳过（DNS-01 与 dynamic_dns 将不可用）"
+elif [ -f "$SCRIPT_DIR/install-caddy-modules.sh" ]; then
+	if ! bash "$SCRIPT_DIR/install-caddy-modules.sh"; then
+		warn "换二进制没成功 —— 不影响站点跑 HTTPS-01，但 DNS-01 / dynamic_dns 用不了。"
+		warn "之后可以单独补：bash install-caddy-modules.sh"
+	fi
+else
+	warn "没找到 install-caddy-modules.sh，跳过。缺模块时 DNS-01 不可用"
 fi
 
 echo "== 2/9 防火墙放行（含 SSH，避免把自己关在门外）=="
@@ -109,7 +125,11 @@ else
 	# KEY=value 格式：Caddy systemd EnvironmentFile、admin-api.py、cf.sh 三方共用这一个文件
 	printf 'CF_API_TOKEN=%s\n' "$(printf '%s' "$CF_TOKEN_INPUT" | tr -d '[:space:]')" > /etc/caddy/cf.env
 	chmod 600 /etc/caddy/cf.env
-	chmod 700 /etc/caddy
+	# /etc/caddy 必须是 755，不能是 700：Caddy 以 caddy 用户运行，得能**穿过**
+	# 这个目录去读 Caddyfile 和 sites/*.conf。真正的秘密只有 cf.env（600），
+	# 目录本身不需要藏 —— 藏了的后果是全新安装的 Caddy 起不来，
+	# 报 "open /etc/caddy/Caddyfile: permission denied"。
+	chmod 755 /etc/caddy
 	log "Token 已写入 /etc/caddy/cf.env（600）"
 fi
 
@@ -124,6 +144,9 @@ fi
 
 echo "== 4/9 写入 Caddy 配置 =="
 mkdir -p /etc/caddy/sites
+# 同上：这两个也要显式给到 caddy 用户能读的权限。即便 umask 正常，显式写一遍
+# 也免得被 --cf-token 那条路径遗留的 umask 坑到（目录 700 时 Caddy 同样读不了）。
+chmod 755 /etc/caddy /etc/caddy/sites
 install -m 644 "$SCRIPT_DIR/Caddyfile" /etc/caddy/Caddyfile
 if [ -n "$LE_EMAIL" ]; then
 	sed -i "s/^[[:space:]]*email .*/\temail ${LE_EMAIL}/" /etc/caddy/Caddyfile
@@ -143,8 +166,13 @@ install -m 755 "$SCRIPT_DIR/enable-cf-native.sh" /usr/local/lib/caddy/enable-cf-
 install -m 755 "$SCRIPT_DIR/add-site.sh"         /usr/local/bin/add-site.sh
 install -m 755 "$SCRIPT_DIR/sync-dns.sh"         /usr/local/bin/sync-dns.sh
 install -m 755 /usr/local/lib/caddy/enable-cf-native.sh /usr/local/bin/enable-cf-native.sh
+install -m 755 "$SCRIPT_DIR/install-caddy-modules.sh" /usr/local/lib/caddy/install-caddy-modules.sh
+install -m 755 /usr/local/lib/caddy/install-caddy-modules.sh /usr/local/bin/install-caddy-modules.sh
+# node-agent.sh 以 domain-autopilot-node 的名字装：它会出现在被纳管机器的
+# authorized_keys 的 command= 里，名字得短且稳定，改了就得到各节点重授权。
+install -m 755 "$SCRIPT_DIR/node-agent.sh"       /usr/local/bin/domain-autopilot-node
 mkdir -p /var/cache/caddy/cf && chmod 700 /var/cache/caddy/cf
-log "cf.sh / add-site.sh / sync-dns.sh / enable-cf-native.sh 已安装"
+log "cf.sh / add-site.sh / sync-dns.sh / enable-cf-native.sh / install-caddy-modules.sh / domain-autopilot-node 已安装"
 
 echo "== 6/9 校验并启动 Caddy =="
 # 注意：caddy fmt 不认 --config，文件名是位置参数

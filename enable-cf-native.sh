@@ -173,25 +173,53 @@ fi
 if [ "$NEED_ACME" -eq 1 ] || [ "$NEED_DDNS" -eq 1 ]; then
 	cp "$CONF" "$CONF.bak.$(date +%s)"
 
-	# 块通过 stdin 喂给 awk，不落临时文件
-	DDNS_BLOCK=$'dynamic_dns {\n\tprovider cloudflare {env.CF_API_TOKEN}\n\tdomains {\n\t\texample.com @\n\t}\n\tcheck_interval 5m\n\tttl 60\n\tdynamic_domains\n}\n'
+	# 块通过 stdin 喂给 awk，不落临时文件。
+	#
+	# ⚠️ 关键修正：acme_dns 和 dynamic_dns **都是全局选项**，必须写在文件顶部那个
+	#    { } 块里面。旧版把 dynamic_dns 插在 `:80 {` 之前 —— 那是全局块外面，
+	#    Caddy 会直接报 `unrecognized directive: provider` 并拒绝启动。
+	#    这个 bug 很阴：只有当 Caddy 真的编进了 dynamic_dns 模块时才暴露，
+	#    标准版 Caddy 上 HAS_DYNAMIC=0、压根不注入，所以长期没被发现。
+	#
+	# domains 里不再塞 example.com 占位符：dynamic_domains 会自动扫描 Caddy 配置里
+	# 所有站点域名去管，塞个你根本没权限的域名进去只会刷错误日志。
+	#
+	# ttl 必须带时间单位：写 `ttl 60` 会得到
+	#   parsing caddyfile tokens for 'dynamic_dns': time: missing unit in duration "60"
+	# 。选项名是 ttl（不是 dns_ttl，那个会报 wrong argument）。
+	DDNS_BLOCK=$'dynamic_dns {\n\tprovider cloudflare {env.CF_API_TOKEN}\n\tcheck_interval 5m\n\tttl 60s\n\tdynamic_domains\n}'
 
 	printf '%s' "$DDNS_BLOCK" | awk \
 		-v do_acme="$NEED_ACME" \
 		-v do_ddns="$NEED_DDNS" '
-		do_acme == 1 && /^[[:space:]]*\{[[:space:]]*$/ && !a {
+		g == 0 && /^[[:space:]]*\{[[:space:]]*$/ {
 			print
-			print "\tacme_dns cloudflare {env.CF_API_TOKEN}"
-			a = 1
+			g = 1
+			if (do_acme == 1) print "\tacme_dns cloudflare {env.CF_API_TOKEN}"
+			if (do_ddns == 1) {
+				while ((getline l < "-") > 0) print l
+			}
 			next
-		}
-		do_ddns == 1 && /^:80[[:space:]]*\{/ && !b {
-			while ((getline l < "-") > 0) print l
-			print ""
-			b = 1
 		}
 		{ print }
 	' "$CONF" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
+
+	# 上面那个 `> "$CONF.tmp"` 是重定向建的文件，权限跟着当前 umask 走 ——
+	# 万一 umask 是 077（比如被 bootstrap 的 --cf-token 路径带进来的），
+	# Caddyfile 就成了 600，而它是 caddy 用户必须读的文件，服务会直接起不来。
+	# 这里显式纠正，别指望 umask 恰好是对的。
+	chmod 755 "$(dirname "$CONF")"
+	chmod 644 "$CONF"
+
+	# 注入之后自检一次：如果某个块没进去（比如 Caddyfile 被改得没有顶部 { } 块了），
+	# 与其留下一个看似成功实则缺功能的配置，不如明确报出来。
+	if [ "$NEED_ACME" -eq 1 ] && ! grep -q "acme_dns cloudflare" "$CONF"; then
+		err "没找到顶部 { } 全局块，acme_dns 没能注入。请手动加："
+		err '  在文件最上面的 { } 里加一行  acme_dns cloudflare {env.CF_API_TOKEN}'
+	fi
+	if [ "$NEED_DDNS" -eq 1 ] && ! grep -q "^[[:space:]]*dynamic_dns[[:space:]]*{" "$CONF"; then
+		err "dynamic_dns 没能注入（同样是因为缺顶部 { } 块）"
+	fi
 
 	if [ "$NEED_ACME" -eq 1 ]; then log "已注入全局 acme_dns cloudflare（DNS-01 签发，不占 80 端口）"; fi
 	if [ "$NEED_DDNS" -eq 1 ]; then log "已注入 dynamic_dns 块（自动建记录 + IP 漂移）"; fi

@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>domain-autopilot — 一台 VPS，无限HTTPS站点，证书和DNS全自动</title>
-<meta name="description" content="Caddy + Cloudflare API：一行命令加站点，自动建 DNS 记录、自动签发续签 Let's Encrypt 证书、自动配反向代理，附带本地管理面板。">
+<title>domain-autopilot — VPS 上的 HTTPS 站点，证书和 DNS 全自动</title>
+<meta name="description" content="Caddy + Cloudflare API：一行命令加站点，自动建 DNS 记录、自动签发续签 Let's Encrypt 证书、自动配反向代理，附带可跨机器纳管的管理面板。">
 <style>
 :root{
   --bg:#ffffff; --bg-soft:#f6f8fa; --bg-inset:#f6f8fa;
@@ -150,12 +150,22 @@ footer li{margin:4px 0}
     <div class="term">
       <div class="term-bar">
         <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-        <span class="term-tab on" data-p="p1">一键部署</span>
+        <span class="term-tab on" data-p="p0">SSH 粘一段</span>
+        <span class="term-tab" data-p="p1">本机推送（可选）</span>
         <span class="term-tab" data-p="p2">手动两步</span>
         <span class="term-tab" data-p="p3">加站点</span>
         <button class="copy" id="copybtn">复制</button>
       </div>
-      <div class="pane on" id="p1"><pre><span class="c"># 在你自己的电脑上，不是服务器上</span>
+      <div class="pane on" id="p0"><pre><span class="c"># 登进 VPS，粘这三行。不用本地 Windows 参与</span>
+ssh -p <span class="p">2222</span> root@<span class="p">你的IP</span>
+
+curl -fsSL -o /tmp/da.tgz https://codeload.github.com/easun1874/domain-autopilot/tar.gz/refs/heads/main
+mkdir -p /tmp/da-src &amp;&amp; tar xzf /tmp/da.tgz -C /tmp/da-src --strip-components=1
+bash /tmp/da-src/bootstrap.sh --local-dir /tmp/da-src
+
+<span class="c"># 中途只问你一次 Cloudflare API Token（输入不可见）</span>
+<span class="c"># 仓库是公开的，不需要 GitHub 凭据</span></pre></div>
+      <div class="pane" id="p1"><pre><span class="c"># 在你自己的电脑上，不是服务器上</span>
 cd domain-autopilot
 bash deploy.sh root@<span class="p">你的IP</span> <span class="c">-p 22</span>
 
@@ -273,7 +283,7 @@ curl -sI https://app.example.com | head -1</pre></div>
 <section id="features">
   <div class="wrap">
     <h2><span class="num">02</span>能做什么</h2>
-    <p class="lead">六个特性，每个都对应一件原本要手动干的活。</p>
+    <p class="lead">这些特性，每一条都对应一件原本要手动干的活。</p>
 
     <div class="grid">
       <div class="card">
@@ -300,11 +310,18 @@ curl -sI https://app.example.com | head -1</pre></div>
       </div>
       <div class="card">
         <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M14 2H2a1 1 0 00-1 1v8a1 1 0 001 1h12a1 1 0 001-1V3a1 1 0 00-1-1zM2 3h12v6H2V3zm3 9h6v1H5v-1z"/></svg>Web 管理面板</h3>
-        <p>纯标准库后端 + 单文件前端，站点增删、证书到期、DNS 状态一屏可见。</p>
+        <p>纯标准库后端 + 单文件前端，站点增删、证书到期、DNS 状态一屏可见。可给站点加 HTTP Basic 口令。</p>
+      </div>
+      <div class="card">
+        <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h5v5H2V2zm7 0h5v5H9V2zM2 9h5v5H2V9zm7 0h5v5H9V9z"/></svg>一个面板管多台 VPS</h3>
+        <p>把别的机器加成<b>节点</b>，加站点时选目标节点，站点与证书跨机器统一看。
+          授权只往对方 <code>authorized_keys</code> 加一行带 <code>command=</code> 限制的条目 ——
+          那把钥匙<b>只能做五个动作，拿不到 shell</b>。</p>
       </div>
       <div class="card warn">
-        <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1l7 13H1L8 1zm0 3.5L3.5 12.5h9L8 4.5zM7 7h2v3H7V7zm0 4h2v1.5H7V11z"/></svg>面板默认本地监听</h3>
-        <p>面板只听 <code>127.0.0.1:8848</code>，<b>请务必不要改成 0.0.0.0</b> —— 它能增删站点还能读 Token。</p>
+        <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1l7 13H1L8 1zm0 3.5L3.5 12.5h9L8 4.5zM7 7h2v3H7V7zm0 4h2v1.5H7V11z"/></svg>面板要么走隧道，要么带口令</h3>
+        <p>面板默认只听 <code>127.0.0.1:8848</code>。<b>不要改成 0.0.0.0</b>。想挂公网就用
+          <code>--auth 用户名:密码</code> 反代出去，不加口令千万别挂 —— 它能增删站点还能读 Token。</p>
       </div>
       <div class="card warn">
         <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm3.5 5.5l-5 6h4v1.5h-6v-1.5l5-6H5.5V4h6v1.5z"/></svg>SSH 端口自动放行</h3>
@@ -342,17 +359,20 @@ curl -sI https://app.example.com | head -1</pre></div>
 <section id="files">
   <div class="wrap">
     <h2><span class="num">04</span>文件清单</h2>
-    <p class="lead">九个文件，职责单一，可以按需要挑着用。</p>
+    <p class="lead">职责单一，可以按需要挑着用；全部幂等，重复跑不会把事情搞得更糟。</p>
     <div class="scroll">
     <table>
       <thead><tr><th>文件</th><th>在哪执行</th><th>作用</th></tr></thead>
       <tbody>
-        <tr><td><code>deploy.sh</code></td><td>你的电脑</td><td>预检 + 上传 + 远程安装，一条命令装完整个栈</td></tr>
+        <tr><td><code>bootstrap.sh</code></td><td>服务器</td><td>首次安装入口：拉源码 → 完整性检查 → 调 setup.sh</td></tr>
+        <tr><td><code>deploy.sh</code></td><td>你的电脑</td><td>可选路径：预检 + 上传 + 远程安装，一条命令装完整个栈</td></tr>
         <tr><td><code>setup.sh</code></td><td>服务器</td><td>装依赖、防火墙、Token、脚本、cron、面板</td></tr>
         <tr><td><code>enable-cf-native.sh</code></td><td>服务器</td><td>打开 Caddy 原生 CF 集成（DNS-01 + dynamic_dns）</td></tr>
+        <tr><td><code>install-caddy-modules.sh</code></td><td>服务器</td><td>换成带 CF / dynamic_dns 模块的 Caddy 官方构建并锁住版本</td></tr>
         <tr><td><code>cf.sh</code></td><td>服务器</td><td>Cloudflare API 封装，可被 source 也可单独调试</td></tr>
-        <tr><td><code>add-site.sh</code></td><td>服务器</td><td>加/删站点：DNS + 配置 + 证书，一行搞定</td></tr>
+        <tr><td><code>add-site.sh</code></td><td>服务器</td><td>加/删站点：DNS + 配置 + 证书（可加 Basic 口令），一行搞定</td></tr>
         <tr><td><code>sync-dns.sh</code></td><td>服务器</td><td>每日巡检：IP 漂移、记录对齐、证书到期预警</td></tr>
+        <tr><td><code>node-agent.sh</code></td><td>服务器</td><td>被纳管节点的白名单执行器，只放行 list / add / remove / certs / status</td></tr>
         <tr><td><code>admin-api.py</code></td><td>服务器</td><td>面板后端，纯标准库，默认听 127.0.0.1:8848</td></tr>
         <tr><td><code>admin-ui.html</code></td><td>浏览器</td><td>面板前端，单文件，无构建</td></tr>
         <tr><td><code>Caddyfile</code></td><td>服务器</td><td>主配置，站点配置靠 <code>import</code> 加载</td></tr>
@@ -407,6 +427,8 @@ curl -sI https://app.example.com | head -1</pre></div>
       <div class="pane on" id="c1"><pre>add-site.sh app.example.com 127.0.0.1:8080   <span class="c"># 加站点</span>
 add-site.sh -r app.example.com               <span class="c"># 删站点 + 删 DNS 记录</span>
 add-site.sh example.com 127.0.0.1:8080 -d    <span class="c"># 强制 DNS-01</span>
+add-site.sh app.example.com 127.0.0.1:8080 \
+  --auth 用户名:密码                          <span class="c"># 加 HTTP Basic 口令</span>
 sync-dns.sh --check                          <span class="c"># 只看报告不动手</span>
 
 bash /usr/local/lib/caddy/cf.sh check        <span class="c"># Token 连通性</span>
@@ -416,7 +438,10 @@ bash /usr/local/lib/caddy/cf.sh resolve app.example.com</pre></div>
 journalctl -u admin-api -n 50 --no-pager     <span class="c"># 面板日志</span>
 caddy validate --config /etc/caddy/Caddyfile <span class="c"># 配置校验</span>
 caddy list-modules | grep -E 'cloudflare|dynamic_dns'
-systemctl status caddy admin-api --no-pager</pre></div>
+systemctl status caddy admin-api --no-pager
+<span class="c"># 节点侧：确认白名单执行器在、且拒绝任意命令</span>
+ls -l /usr/local/bin/domain-autopilot-node
+SSH_ORIGINAL_COMMAND='id' /usr/local/bin/domain-autopilot-node</pre></div>
     </div>
     <p class="note">注意：开启 Cloudflare 橙色云代理后，浏览器看到的是 Cloudflare 的证书而不是 Let's Encrypt 的 —— 这是正常的，不是配错了。</p>
   </div>

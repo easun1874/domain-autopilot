@@ -18,6 +18,7 @@ FIXED_IP=""
 INSECURE=0
 DRY=0
 UPSTREAM_PATH=""
+AUTH_SPEC=""
 
 usage() {
 	cat <<'EOF'
@@ -42,6 +43,9 @@ usage() {
   -n, --no-api-dns    只写 Caddy 配置，DNS 记录你自己去面板加
   -k, --insecure      上游是 https 但证书不受信（自签）时跳过校验。
                       上游主机是回环/内网地址且写了 https:// 时会自动开启，不用手动加
+  --auth 用户:密码    给这个站点加 HTTP Basic 认证（Caddy 原生 basic_auth，bcrypt 存储）。
+                      面板 / 后台这类东西暴露到公网时必加，否则等于把控制权挂网上。
+                      例：--auth admin:MyPass123
   --dry-run           只打印将要写入的 Caddy 站点配置，不建 DNS、不落盘、不 reload。
                       想确认「上游会被写成什么」时用这个，例如带路径的面板
   -r, --remove        删除站点（同时删掉 Cloudflare DNS 记录）
@@ -84,6 +88,7 @@ while [ "$#" -gt 0 ]; do
 		-p | --no-proxy) USE_PROXY=0; shift ;;   # 兼容旧写法：不开代理本就是默认
 		-n | --no-api-dns) NO_API_DNS=1; shift ;;
 		-k | --insecure) INSECURE=1; shift ;;
+		--auth) AUTH_SPEC="$2"; shift 2 ;;
 		--dry-run) DRY=1; shift ;;
 		-h | --help) usage; exit 0 ;;
 		-*) err "未知参数: $1"; exit 1 ;;
@@ -258,6 +263,42 @@ if [ "${UPSTREAM#https://}" != "$UPSTREAM" ]; then
 	fi
 fi
 
+# 站点的 HTTP Basic 认证。面板 / 后台这类东西暴露到公网时必须加 —— 本项目自己的
+# 管理面板（admin-api.py）就是零鉴权设计，全靠回环监听兜底，一旦反代出去不加这层，
+# 任何扫描到的人都能改 Caddyfile、读走配置和 DNS 记录。
+#
+# ⚠️ Caddy 的 basic_auth 只认 bcrypt / argon2 hash，不认明文，所以现场生成。
+# bcrypt hash 形如 $2a$14$xxxx，**含 $ 字符** —— 绝不能内联进下面的 heredoc：
+# heredoc 是无引号 <<EOF，会做变量展开，$2a 会被吃成空串，配置静默变成
+# `basic_auth { admin }`，Caddy 校验直接失败。必须走变量插入 —— 变量替换的结果
+# 不会再被展开，这才是安全路径。
+BASIC_BLOCK=""
+AUTH_DESC="未启用认证"
+if [ -n "$AUTH_SPEC" ]; then
+	AUTH_USER="${AUTH_SPEC%%:*}"
+	AUTH_PASS="${AUTH_SPEC#*:}"
+	if [ "$AUTH_PASS" = "$AUTH_SPEC" ] || [ -z "$AUTH_USER" ] || [ -z "$AUTH_PASS" ]; then
+		err "--auth 格式应为 用户名:密码（例如 --auth admin:MyPass123）"
+		exit 1
+	fi
+	# 密码走 stdin 喂进去，不用 --plaintext，避免明文出现在 argv 里（ps 可见）。
+	# ⚠️ 结尾那个 \n 不是可有可无：caddy hash-password 从 stdin 读的是**一整行**
+	#    （ReadString('\n') 之后再 TrimSpace），不给换行符它会直接报 "Error: EOF"
+	#    并退出。因为会 TrimSpace，这个换行不会被算进密码本体。
+	if ! AUTH_HASH="$(printf '%s\n' "$AUTH_PASS" | caddy hash-password 2>/dev/null | tr -d '\r' | head -1)"; then
+		AUTH_HASH=""
+	fi
+	case "$AUTH_HASH" in
+		'$2'* | '$argon2'*) : ;;
+		*)
+			err "生成密码 hash 失败（拿到的是「$AUTH_HASH」）。先确认 caddy 能用：printf 'test\n' | caddy hash-password"
+			exit 1
+			;;
+	esac
+	BASIC_BLOCK="$(printf '\n\tbasic_auth {\n\t\t%s %s\n\t}' "$AUTH_USER" "$AUTH_HASH")"
+	AUTH_DESC="已开 Basic 认证（用户 $AUTH_USER）"
+fi
+
 # ---------- 自动创建 Cloudflare DNS 记录 ----------
 DNS_DESC="未启用自动 DNS"
 if [ "$DRY" -eq 1 ]; then
@@ -304,7 +345,7 @@ ${DOMAIN} {
 		dns cloudflare {env.CF_TOKEN}
 		resolutions
 	}
-	encode gzip
+	encode gzip${BASIC_BLOCK}
 	reverse_proxy ${UPSTREAM} {
 		flush_interval -1${TLS_BLOCK}
 	}
@@ -316,7 +357,7 @@ else
 	SITE_CONF="$(cat <<EOF
 # 自动生成 by add-site.sh $(date -u +%F)
 ${DOMAIN} {
-	encode gzip
+	encode gzip${BASIC_BLOCK}
 	reverse_proxy ${UPSTREAM} {
 		flush_interval -1${TLS_BLOCK}
 	}
@@ -338,6 +379,9 @@ printf '%s\n' "$SITE_CONF" > "$CONF_FILE"
 
 chown root:root "$CONF_FILE"
 chmod 644 "$CONF_FILE"
+# 站点目录本身也要让 caddy 用户能穿过 —— 目录是 700 的话，里面的 conf 就算 644
+# 也读不到，Caddy 会报 permission denied 并起不来。老装机型可能留了 700，顺手纠。
+chmod 755 "$SITES_DIR" 2>/dev/null || true
 
 caddy fmt --overwrite "$CONF" >/dev/null 2>&1 || true
 
@@ -365,9 +409,13 @@ if [ -n "$UPSTREAM_PATH" ]; then ACCESS_URL="https://$DOMAIN$UPSTREAM_PATH/"; fi
 
 echo
 log "站点已添加: $ACCESS_URL  ->  $UPSTREAM"
-log "签发: $SIG    DNS: $DNS_DESC  代理: $PROXIED"
+log "签发: $SIG    DNS: $DNS_DESC  代理: $PROXIED   认证: $AUTH_DESC"
 echo "  · 证书正在签发，等 10~30 秒生效"
 echo "  · 验证: curl -sI $ACCESS_URL | head -1"
+if [ -n "$AUTH_SPEC" ]; then
+	echo "  · 已加 Basic 认证，所以这条 curl 会返回 401 —— 这是对的，不是故障"
+	echo "    带凭据访问: curl -sI -u '$AUTH_USER:你的密码' $ACCESS_URL | head -1"
+fi
 if [ -n "$UPSTREAM_PATH" ]; then
 	echo "  · 该服务把路径当成自己的地址（webBasePath 之类），根路径 https://$DOMAIN/ 会 404"
 	echo "    分享给别人时记得带上 $UPSTREAM_PATH"

@@ -98,12 +98,16 @@ NEW_REV="$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo 'unk
 [ "$OLD_REV" != "$NEW_REV" ] && log "版本变化：$OLD_REV → $NEW_REV" || info "版本号未变，仍执行重装确保一致"
 
 echo "== 2/4 重装脚本 =="
-for f in cf.sh enable-cf-native.sh; do
+for f in cf.sh enable-cf-native.sh install-caddy-modules.sh; do
 	install -m 755 "$INSTALL_DIR/$f" "/usr/local/lib/caddy/$f"
 done
-for f in add-site.sh sync-dns.sh enable-cf-native.sh; do
+for f in add-site.sh sync-dns.sh enable-cf-native.sh install-caddy-modules.sh; do
 	install -m 755 "$INSTALL_DIR/$f" "/usr/local/bin/$f"
 done
+# 节点侧白名单执行器：装成 domain-autopilot-node（各节点 authorized_keys 里 command= 指的名字）
+if [ -f "$INSTALL_DIR/node-agent.sh" ]; then
+	install -m 755 "$INSTALL_DIR/node-agent.sh" /usr/local/bin/domain-autopilot-node
+fi
 if [ -f "$INSTALL_DIR/update.sh" ]; then
 	install -m 755 "$INSTALL_DIR/update.sh" /usr/local/bin/domain-autopilot-update
 fi

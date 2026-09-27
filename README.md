@@ -171,7 +171,20 @@ ssh -N -L 8848:127.0.0.1:8848 -p 2222 root@203.0.113.10
 **Q：装崩了能重来吗？**
 能。所有脚本都幂等，`bootstrap.sh` 和 `setup.sh` 重复跑不会把事情搞得更糟，已有站点和 Token 不丢。
 
----
+**Q：不想开隧道，能把面板直接挂到公网吗？**
+能，但**必须带 `--auth`**：
+
+```bash
+add-site.sh panel.example.com 127.0.0.1:8848 --auth 用户名:密码
+```
+
+这样面板就走正规 HTTPS，口令用 bcrypt 存。**不加 `--auth` 千万别挂**——那等于把一个能增删
+站点、能读 Cloudflare Token 的接口裸奔在公网上。细节与坑见第 15 节「安全设计」。
+
+**Q：第二台、第三台 VPS 也要各开一次隧道看面板，太烦了，怎么办？**
+面板支持**多机纳管**：一台装面板当控制端，其余机器当节点，加站点时选一下目标节点就行，
+站点和证书还能跨机器统一看。授权是往对方 `authorized_keys` 加一行 `command=` 限制的条目，
+那把钥匙只能做五件事、拿不到 shell。见第 15.1 节。
 
 ---
 
@@ -471,8 +484,14 @@ add-site.sh panel.example.com 203.0.113.10:35216/a6bba520f977239b9f --dry-run
 
 ### 反代别的机器上的服务（跨 VPS）
 
-上游写对方的地址就行。那道自动改写**不会碰跨机上游** —— 它只在本机公网 IP + 本机确有
-监听时才触发，指向别的机器一律原样保留。
+**先想清楚一个问题：服务是只监听 `127.0.0.1`，还是对外可达？**
+
+如果对方那台机器只把服务绑在回环上（很常见：本机面板、x-ui、只给本机用的后台），
+**你是没法从别处反代它的**——那是网络层的事实，不是换个写法能绕过去的。
+正确做法是**服务在哪台机器上，就在那台机器上加站点**，用面板选那台节点（见第 15.1 节）。
+
+只有服务确实对外可达时，才在面板本机上游写对方地址。那道自动改写
+**不会碰跨机上游** —— 它只在本机公网 IP + 本机确有监听时才触发，指向别的机器一律原样保留。
 
 ```bash
 # 对方 VPS 的公网 IP
@@ -491,7 +510,7 @@ add-site.sh api.example.com https://api.other.example.com
 curl -sS -o /dev/null -w '%{http_code}\n' --max-time 5 http://198.51.100.7:8080/
 ```
 
-三个容易踩的点：
+四个容易踩的点：
 
 1. **对方机器那个端口得真的开着，且对方安全列表要放行你的 VPS**。能收窄来源就收窄，
    别放行全网 —— 云控制台一般支持「源 = 你的 VPS 公网 IP」。
@@ -508,6 +527,9 @@ reverse_proxy https://<对方> {
 ```
 
    但这等于放弃证书校验，公网链路上不推荐 —— 能上真证书就上。
+   （`add-site.sh` 已经自动化这件事：回环/内网主机只做一次探测，拿到证书就补 `https://`
+   并自动加 `tls_insecure_skip_verify`；**公网主机必须显式 `-k`/`--insecure`**，
+   不默认帮你降级安全性。）
 
 脚本内部自动完成的链路：
 
@@ -531,7 +553,15 @@ dynamic_dns 持续保底:   Caddy 自己每 5 分钟比对，VPS 换 IP 自动�
 | `-n, --no-api-dns` | 不碰 Cloudflare，只写 Caddy 配置 |
 | `-e, --email` | 指定 LE 注册邮箱 |
 | `-d, --dns` | 强制本站 DNS-01（全局已开时不需要加） |
+| `-A, --auth 用户名:密码` | 给这个站点加 HTTP Basic 认证（口令以 bcrypt 存在配置里）。暴露管理面板、监控页这类不该公开的东西时必加 |
 | `-r, --remove` | 删除站点，**同时删掉 Cloudflare 里的 DNS 记录** |
+
+`--auth` 的密码里**不能有空格**（要过 SSH 命令行传到别的机器）。加了认证之后：
+
+```bash
+curl -sI https://app.example.com              # 401 —— 这是对的，不是故障
+curl -sI -u '用户名:密码' https://app.example.com   # 200
+```
 
 验证：
 
@@ -801,6 +831,8 @@ journalctl -u caddy -n 50 --no-pager      # 看有没有 CF API 报错
 | `setup.sh` | 【VPS】 | 装 Caddy / jq / python3、防火墙、Token、脚本、cron、面板。通常由 deploy.sh 代跑 |
 | `enable-cf-native.sh` | 【VPS】 | 打开 Caddy 原生的 Cloudflare 集成（DNS-01 签发 + 自动建记录）。setup.sh 已含这一步 |
 | `cf.sh` | 【VPS】 | Cloudflare API 封装库（可被 source，也可独立跑子命令调试） |
+| `install-caddy-modules.sh` | 【VPS】 | 换成带 `dns.providers.cloudflare` + `dynamic_dns` 的 Caddy 官方构建，并 `apt-mark hold` 防 apt 覆盖。setup.sh 已含这一步 |
+| `node-agent.sh` | 【VPS】 | **被纳管节点侧的白名单执行器**，装成 `/usr/local/bin/domain-autopilot-node`。挂在 `authorized_keys` 的 `command=` 上，只放行 list / add / remove / certs / status 五个动作（见第 15.1 节） |
 | `add-site.sh` | 【VPS】 | 加/删站点：自动建 DNS + 配置 + 证书。装完在 `/usr/local/bin/`，直接敲命令名 |
 | `sync-dns.sh` | 【VPS】 | 巡检：证书预警、DNS 对齐、IP 漂移。已挂 cron，每 10 分钟自动跑 |
 | `Caddyfile` | Caddy 主配置，站点配置通过 `import` 加载 |
@@ -844,6 +876,8 @@ journalctl -u caddy -n 50 --no-pager      # 看有没有 CF API 报错
 | `add-site.sh` | 把"建记录 + 写配置 + 热加载"串成一条命令，且不绑定 Docker |
 | `sync-dns.sh` | 证书到期预警。Caddy 只管续签，不管提前告诉你 |
 | `enable-cf-native.sh` | 检测模块 + 注入配置 + 处理 systemd 环境变量，把上游能力拼成一条命令 |
+| `install-caddy-modules.sh` | Caddy 官方 apt 包是**标准版**，不含第三方模块。要拿带模块的构建得自己去下载站取，还要防 apt 把它换回去 |
+| `node-agent.sh` | 面板要跨机器操作，就得在对方机器上留一个"只能做这五件事"的入口。SSH 的 `command=` 正好能表达这个约束，不用额外装 agent 进程 |
 | `admin-api.py` / `admin-ui.html` | 上游全是 CLI，没有给"散装 VPS"的轻量面板 |
 
 ### 现在能实现的功能
@@ -853,7 +887,8 @@ journalctl -u caddy -n 50 --no-pager      # 看有没有 CF API 报错
 - VPS 换 IP 自动改 DNS（`dynamic_dns` 5 分钟一轮 + `sync-dns.sh` 每日兜底）
 - 80 端口可关，一张 `*.example.com` 泛证书管所有子域
 - 上游可以是本机端口 / 局域网 IP / Docker 服务名，**不绑定 Docker**
-- Web 面板查看、增删站点
+- Web 面板查看、增删站点；可给站点加 HTTP Basic 口令
+- **一个面板管多台 VPS**：加站点时选目标节点，跨机器统一看站点与证书（见第 15.1 节）
 
 ---
 
@@ -878,9 +913,10 @@ python3 admin-api.py --mock     # 演示模式，数据是假的
 
 ### 面板能做什么
 
-- 站点列表：域名、上游、CF 记录类型与 IP、代理开关状态
-- 证书到期天数：>30 绿、7~30 黄、≤7 红
-- 添加 / 删除站点（删除会二次确认）
+- 站点列表：域名、上游、**所属节点**、CF 记录类型与 IP、代理开关状态
+- 证书到期天数：>30 绿、7~30 黄、≤7 红（跨节点汇总）
+- 添加 / 删除站点（删除会二次确认），**添加时可指定目标节点、可加 HTTP Basic 口令**
+- **节点管理**：填 IP / 端口 / 用户就能纳管任意一台机器，面板给出对方要粘贴的授权命令
 - 顶部状态徽章：Caddy 是否运行、CF 模块装没装、Token 有没有
 - 没启用原生集成时，顶部会提示去跑 `enable-cf-native.sh`
 - Caddyfile 实时预览
@@ -889,33 +925,118 @@ python3 admin-api.py --mock     # 演示模式，数据是假的
 
 ### 安全设计（重要）
 
-**后端默认只监听 `127.0.0.1`，不对外暴露。** 这是刻意的——管理面板本身就是攻击面，
+**后端默认只监听 `127.0.0.1`，不对外暴露。** 这是默认姿态——管理面板本身就是攻击面，
 第 7 节安全加固清单里明确要求管理后台不要直接暴露公网。
 
-所以访问方式只有两条：
+三种访问方式，按暴露面从小到大：
 
-1. **SSH 隧道（推荐）**：`ssh -L 8848:127.0.0.1:8848 root@你的IP`，零暴露面。
-2. **加 basicauth 后走 Caddy**：需要额外配置，且务必先想清楚风险。
+| 方式 | 暴露面 | 怎么做 |
+|---|---|---|
+| **SSH 隧道**（默认推荐） | 零 | `ssh -L 8848:127.0.0.1:8848 root@你的IP`，然后浏览器开 `http://localhost:8848` |
+| **Caddy 反代 + Basic 认证** | 一个域名，但要过口令 | 一条命令，见下面 |
+| 直接改监听 `0.0.0.0` | 全裸 | **不要这么干** |
 
-面板不做登录认证，因为默认只听回环地址。一旦你把它改到 `0.0.0.0`，就等于把一个
-能增删站点、能读 Token 的接口裸奔在公网上——**不要这么干**。
+第二种方式（把面板正正经经挂到 HTTPS 上）用现成命令就能做，`--auth` 会自动生成
+bcrypt 口令并写进站点配置：
+
+```bash
+# 在跑面板的那台机器上。域名先解析到它，Cloudflare 保持灰云直连
+add-site.sh panel.example.com 127.0.0.1:8848 --auth 你的用户名:你的密码
+```
+
+⚠️ 三个必须知道的点：
+
+1. **一定要加 `--auth`。** 不加就是把一个能增删站点、能读 Cloudflare Token 的接口
+   挂在公网上，等于把机器送人。
+2. **口令是 bcrypt 存的，`caddy hash-password` 只认 hash 不认明文**，所以配置里能看到
+   `$2a$14$...` 而不是你的密码。想换口令就重新跑一次加站点命令覆盖。
+3. **面板自举的死锁**：面板被自己的 Caddy 反代着，如果哪天 Caddyfile 改坏导致 Caddy
+   起不来，面板会跟着一起失联，你只能 SSH 上去救。所以改 Caddyfile 前后先跑
+   `caddy validate`；`add-site.sh` 已经内置这一步，但手改的时候别忘。
 
 ### API
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | GET | `/api/status` | Caddy 状态、模块、Token |
-| GET | `/api/sites` | 站点列表（含证书天数） |
-| POST | `/api/sites` | 添加站点，调 `add-site.sh` |
-| DELETE | `/api/sites/<域名>` | 删除站点，调 `add-site.sh --remove` |
+| GET | `/api/sites` | 站点列表（含证书天数）+ 每个节点的可达性报告 |
+| POST | `/api/sites` | 添加站点，可带 `node` 指定目标节点、`authUser`/`authPass` 加口令 |
+| DELETE | `/api/sites/<域名>?node=<节点>` | 删除站点，节点用 query 指定 |
+| GET | `/api/nodes` | 节点列表 + 面板的节点公钥（拿去对方机器授权） |
+| POST | `/api/nodes` | 添加 / 更新节点（`name` / `host` / `port` / `user`） |
+| POST | `/api/nodes/<名字>/test` | 测这台节点通不通，返回对方的 Caddy 状态与站点数 |
+| DELETE | `/api/nodes/<名字>` | 移除节点（对方机器上的公钥要自己去清） |
 | GET | `/api/dns` | 查各域名在 Cloudflare 的实际记录 |
-| GET | `/api/certs` | 证书到期列表 |
+| GET | `/api/certs` | 证书到期列表（跨节点汇总） |
 | POST | `/api/refresh` | 跑一次 `sync-dns.sh --check` |
 | GET | `/api/config` | 读 Caddyfile |
 | GET | `/api/telegram` | 机器人配置与服务状态 |
 | POST | `/api/telegram/verify` | 用 Token 调 Telegram `getMe` 验证 |
 | POST | `/api/telegram/pair` | 调 `getUpdates` 探测你的 Telegram 用户 ID |
 | POST | `/api/telegram/apply` | 写 `/etc/caddy/telegram.env`（600），Token 不回显、不进日志 |
+
+### 15.1 多机纳管：一个面板管多台 VPS
+
+有第二台、第三台机器之后，"每台都开一次隧道、各看各的面板"就很烦。
+所以面板支持把别的机器当**节点**纳管：一台装面板（控制端），其余机器只装这个工具集。
+
+**数据模型只有三个字段**：站点 = `节点` + `域名` + `上游`。
+`local` 是保留名，代表面板自己那台机器。
+
+#### 加一台节点，三步
+
+1. 面板「节点」卡片里填 **主机地址 / 端口 / 用户**，点添加。
+2. 面板会显示一段**授权命令**，一键复制，粘到**目标机器**上执行。
+3. 回来点「检测」，能读到对方的 Caddy 状态就成了。
+
+第 2 步粘过去的其实就是往 `/root/.ssh/authorized_keys` 追加一行：
+
+```
+command="/usr/local/bin/domain-autopilot-node",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA...你面板的公钥 panel@domain-autopilot
+```
+
+#### 为什么是这种设计：不要给面板一把万能 root 钥匙
+
+面板要跨机器干活，直觉方案是"放一把能 SSH 到所有机器的 root 私钥"。
+但这把钥匙一旦泄漏，**所有被纳管的机器一起沦陷**——而面板偏偏是要暴露在公网的那个。
+
+所以这里用 SSH 自带的 `command=` 做了一层沙箱：授权行里的 `command=` 让 sshd
+**强制**把任何会话交给 `node-agent.sh`，对方原本想跑的任意命令被塞进
+`$SSH_ORIGINAL_COMMAND`，由脚本做白名单校验。效果是这把钥匙的能力被压成五个动作：
+
+```
+list    列站点        add     加站点        remove  删站点
+certs   读证书到期    status  看节点状态
+```
+
+`id`、`ls`、`cat /etc/shadow`——**一个都跑不了**。再加上
+`no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty`，连隧道和交互 shell 都没了。
+
+关键实现细节（`node-agent.sh`）：用 `read -r -a` 做**纯空白切分、不解析引号**，
+再逐个 token 过正则白名单，**全程没有 `eval`**。所以不存在命令注入——
+客户端塞进来的引号、分号、`$(...)` 只会变成独立 token，然后被正则拒掉。
+
+#### 哪些服务能被别的机器反代
+
+**只有监听 `0.0.0.0` / 对外可达的服务才行。** 只绑 `127.0.0.1` 的服务
+（比如本机面板、只开回环的 x-ui）**没法**从另一台机器反代——那是网络层的事，
+不是工具能绕过去的。这种服务就在它**自己那台机器上**加站点，用面板选 `local`
+或者选那台节点。
+
+| 场景 | 怎么做 |
+|---|---|
+| 服务在 A 机，A 机也装了这个工具集 | 面板选节点 A，上游写 `127.0.0.1:端口` ← **推荐，干净** |
+| 服务在 A 机，A 机是裸的没装 | 面板选面板本机，上游写 `A机公网IP:端口`。⚠️ 要求该端口对公网开放，等于绕过 HTTPS 直连，**安全性差** |
+| 只想暴露 A 机上的 HTTPS 服务 | 在 A 机上加站点拿到证书，然后在面板本机反代 `https://A机公网IP`（自签的话加 `--insecure`） |
+
+#### 两个坑
+
+- **面板的 SSH 私钥绑在 systemd 沙箱里**：`admin-api.service` 是
+  `ProtectSystem=strict` + `ProtectHome=yes`，所以 `nodes.json` 和密钥必须落在
+  `/etc/caddy` 下面，而且 ssh 不能用 `~/.ssh`——代码里显式给了
+  `HOME=/etc/caddy/nodes` 和 `UserKnownHostsFile`。换机器部署时别把这几个路径改到别处。
+- **节点侧也要有 `add-site.sh`**：`node-agent.sh` 只是白名单外壳，真正干活的是
+  `add-site.sh`。用 `bootstrap.sh` 装过的机器两样都有；手工装的话别漏。
 
 ---
 

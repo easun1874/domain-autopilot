@@ -17,7 +17,7 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, unquote, urlencode
 from urllib.request import Request, urlopen
 
 VERSION = "1.0"
@@ -82,20 +82,22 @@ def parse_conf(path):
         "domain": domain,
         "upstream": up.group(1) if up else "",
         "dns01": "dns cloudflare" in text,
+        "auth": "basic_auth" in text,
         "file": os.path.basename(path),
+        "node": "local",
         "raw": text,
     }
 
 
 MOCK_SITES = [
     {"domain": "app.example.com", "upstream": "127.0.0.1:8080", "dns01": True,
-     "file": "app.example.com.conf", "raw": ""},
+     "auth": False, "file": "app.example.com.conf", "node": "local", "raw": ""},
     {"domain": "nas.example.com", "upstream": "192.168.1.10:5000", "dns01": True,
-     "file": "nas.example.com.conf", "raw": ""},
+     "auth": False, "file": "nas.example.com.conf", "node": "local", "raw": ""},
     {"domain": "wiki.example.com", "upstream": "wiki:3000", "dns01": True,
-     "file": "wiki.example.com.conf", "raw": ""},
+     "auth": False, "file": "wiki.example.com.conf", "node": "local", "raw": ""},
     {"domain": "git.example.com", "upstream": "127.0.0.1:3000", "dns01": False,
-     "file": "git.example.com.conf", "raw": ""},
+     "auth": False, "file": "git.example.com.conf", "node": "local", "raw": ""},
 ]
 
 
@@ -114,33 +116,82 @@ def add_site(payload):
         return {"ok": False, "bad_request": True, "error": "域名和上游地址都不能为空"}
     if not re.match(r"^[A-Za-z0-9._*-]+\.[A-Za-z]{2,}$", domain):
         return {"ok": False, "bad_request": True, "error": "域名格式不对: %s" % domain}
+    # 上游含空格必须先拦掉：Caddy 会把空格分隔的几段当成多个上游做负载均衡
+    # （配置校验通过、只有访问时随机 502）；远端更直接 —— 空格会让节点侧的白名单
+    # agent 拆出多余 token 而报「不支持的选项」。
+    if re.search(r"\s", upstream):
+        return {"ok": False, "bad_request": True, "error": "上游地址不能含空格"}
 
-    cmd = "add-site.sh %s %s" % (shellquote(domain), shellquote(upstream))
+    node = find_node(payload.get("node"))
+    if node is None:
+        return {"ok": False, "bad_request": True,
+                "error": "没有这个节点：%s（先在节点列表里加一个）" % (payload.get("node") or "")}
+
+    flags = []
     if payload.get("dns01"):
-        cmd += " --dns"
+        flags.append("--dns")
     if payload.get("useProxy"):
-        cmd += " --proxy"
+        flags.append("--proxy")
     if payload.get("noApiDns"):
-        cmd += " --no-api-dns"
+        flags.append("--no-api-dns")
     if payload.get("ip"):
-        cmd += " --ip " + shellquote(str(payload["ip"]))
+        ip = str(payload["ip"]).strip()
+        if not RE_IPV4.match(ip):
+            return {"ok": False, "bad_request": True, "error": "源站 IP 格式不对：%s" % ip}
+        flags += ["--ip", ip]
+
+    # Basic 认证的用户名/密码。密码不回显（见下面的 shown），因为它从 payload 明文来，
+    # 回给前端就等于进了浏览器历史和面板日志。
+    auth_user = (payload.get("authUser") or "").strip()
+    auth_pass = payload.get("authPass") or ""
+    if auth_user or auth_pass:
+        if not auth_user or not auth_pass:
+            return {"ok": False, "bad_request": True,
+                    "error": "Basic 认证的用户名和密码要一起填"}
+        if re.search(r"[\s:]", auth_user):
+            return {"ok": False, "bad_request": True, "error": "用户名里不能有空格或冒号"}
+        if re.search(r"\s", auth_pass):
+            return {"ok": False, "bad_request": True,
+                    "error": "密码里不能有空格（远端是要过 SSH 命令行传的）"}
+        flags += ["--auth", "%s:%s" % (auth_user, auth_pass)]
 
     if MOCK:
         MOCK_SITES.append({"domain": domain, "upstream": upstream,
                            "dns01": bool(payload.get("dns01")),
-                           "file": domain + ".conf", "raw": ""})
-        return {"ok": True, "output": "[演示模式] 已模拟添加 " + domain}
+                           "auth": bool(auth_user),
+                           "file": domain + ".conf", "node": node["name"], "raw": ""})
+        return {"ok": True, "node": node["name"],
+                "output": "[演示模式] 已在节点 %s 上模拟添加 %s" % (node["name"], domain)}
 
-    rc, out, err = sh(cmd, timeout=120)
-    return {"ok": rc == 0, "output": out, "error": err, "cmd": cmd}
+    if node["local"]:
+        cmd = "add-site.sh " + " ".join(shellquote(a) for a in [domain, upstream] + flags)
+        rc, out, err = sh(cmd, timeout=180)
+    else:
+        rc, out, err = run_on_node(node, " ".join(["add", domain, upstream] + flags),
+                                   timeout=max(180, NODE_SSH_TIMEOUT + 120))
+
+    res = {"ok": rc == 0, "output": out, "error": err, "node": node["name"]}
+    if auth_user:
+        res["cmd"] = "add-site.sh %s %s --auth %s:****（密码已隐去）" % (domain, upstream, auth_user)
+    return res
 
 
-def remove_site(domain):
+def remove_site(node_name, domain):
+    node = find_node(node_name)
+    if node is None:
+        return {"ok": False, "bad_request": True,
+                "error": "没有这个节点：%s" % (node_name or "")}
     if MOCK:
-        MOCK_SITES[:] = [s for s in MOCK_SITES if s["domain"] != domain]
-        return {"ok": True, "output": "[演示模式] 已模拟删除 " + domain}
-    rc, out, err = sh("add-site.sh --remove " + shellquote(domain), timeout=120)
-    return {"ok": rc == 0, "output": out, "error": err}
+        MOCK_SITES[:] = [s for s in MOCK_SITES
+                         if not (s["domain"] == domain and s.get("node", "local") == node["name"])]
+        return {"ok": True, "output": "[演示模式] 已在节点 %s 上模拟删除 %s"
+                % (node["name"], domain)}
+    if node["local"]:
+        rc, out, err = sh("add-site.sh --remove " + shellquote(domain), timeout=180)
+    else:
+        rc, out, err = run_on_node(node, "remove " + domain,
+                                   timeout=max(180, NODE_SSH_TIMEOUT + 120))
+    return {"ok": rc == 0, "output": out, "error": err, "node": node["name"]}
 
 
 def shellquote(s):
@@ -539,6 +590,291 @@ def tg_apply(payload):
     return {"ok": True, "output": "\n".join(out), "state": state}
 
 
+# ---------------- 节点（多机纳管） ----------------
+#
+# 面板本身只「住」在一台机器上（默认 127.0.0.1:8848），但可以管多台。模型很简单：
+#
+#     站点 = 节点 + 域名 + 上游
+#
+#   · local  就是面板所在的这台，直接本机调 add-site.sh
+#   · 其余节点通过 ssh 连过去，对方 authorized_keys 里的 command= 会强制把会话
+#     交给 node-agent.sh，只放行 list / add / remove / certs / status 五个动作
+#
+# 凭据只有一把：面板自己生成的 ed25519 私钥（NODES_KEY）。节点侧只放公钥，
+# 而且带 command= 限制 —— 所以这把私钥即使泄漏，能做的事也被锁在那五个动作里，
+# 不会升级成「所有被纳管机器的 root」。
+#
+# ⚠️ 两个和 systemd 沙箱有关的坑：
+#   1. admin-api.service 是 ProtectSystem=strict + ReadWritePaths=/etc/caddy，
+#      所以 nodes.json 和密钥必须落在 /etc/caddy 下面，放别处写不进去。
+#   2. 同一个单元里还有 ProtectHome=yes，$HOME 不可用 —— ssh 不能靠 ~/.ssh，
+#      所以下面显式给 HOME=/etc/caddy/nodes 和 UserKnownHostsFile。
+
+NODES_FILE = os.environ.get("NODES_FILE", "/etc/caddy/nodes.json")
+NODES_KEY = os.environ.get("NODES_KEY", "/etc/caddy/nodes/nodes_ed25519")
+NODES_KNOWN_HOSTS = os.environ.get("NODES_KNOWN_HOSTS", "/etc/caddy/nodes/known_hosts")
+NODE_SSH_TIMEOUT = int(os.environ.get("NODE_SSH_TIMEOUT", "8"))
+
+RE_NODE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
+RE_IPV4 = re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}$")
+
+MOCK_NODES = [
+    {"name": "demo-node", "host": "203.0.113.84", "port": 22, "user": "root"},
+]
+
+
+def _read_nodes():
+    if MOCK:
+        return [dict(n) for n in MOCK_NODES]
+    try:
+        with open(NODES_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [n for n in data if isinstance(n, dict) and n.get("name") and n.get("host")]
+
+
+def _write_nodes(nodes):
+    if MOCK:
+        MOCK_NODES[:] = nodes
+        return
+    d = os.path.dirname(NODES_FILE)
+    if d and not os.path.isdir(d):
+        os.makedirs(d, exist_ok=True)
+    fd = os.open(NODES_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(nodes, fh, ensure_ascii=False, indent=2)
+    os.chmod(NODES_FILE, 0o600)
+
+
+def ensure_node_key():
+    """面板的节点私钥 —— 只在缺失时生成一次。返回公钥文本（拿不到就空串）。
+    这是幂等的：已经存在就只读公钥，不会重新生成（否则所有节点都要重授权）。"""
+    if MOCK:
+        return "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDEMOonlyNotARealKeypanel panel@domain-autopilot"
+    if not os.path.isfile(NODES_KEY):
+        d = os.path.dirname(NODES_KEY)
+        try:
+            if d and not os.path.isdir(d):
+                os.makedirs(d, exist_ok=True)
+            if d:
+                os.chmod(d, 0o700)
+        except OSError:
+            return ""
+        rc, _, _ = sh("ssh-keygen -t ed25519 -N '' -C panel@domain-autopilot -f %s -q"
+                      % shellquote(NODES_KEY), timeout=20)
+        if rc != 0:
+            return ""
+    try:
+        os.chmod(NODES_KEY, 0o600)
+    except OSError:
+        pass
+    try:
+        with open(NODES_KEY + ".pub", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def find_node(name):
+    """按名字取节点。空 / "local" 都当本机；找不到返回 None。"""
+    if not name or name == "local":
+        return {"name": "local", "host": "127.0.0.1", "local": True}
+    for n in _read_nodes():
+        if n.get("name") == name:
+            node = dict(n)
+            node["local"] = False
+            return node
+    return None
+
+
+def all_nodes():
+    return [{"name": "local", "host": "127.0.0.1", "local": True}] + \
+           [dict(n, local=False) for n in _read_nodes()]
+
+
+def node_ssh(node, remote):
+    """拼 ssh 命令行。remote 会原样落到对方的 $SSH_ORIGINAL_COMMAND 里，
+    由 node-agent.sh 白名单解析 —— 所以 remote 只能是我们自己构造的固定形态，
+    绝不接受前端传来的任意字符串。"""
+    return ("HOME=/etc/caddy/nodes ssh -i %s -p %s"
+            " -o BatchMode=yes -o IdentitiesOnly=yes"
+            " -o StrictHostKeyChecking=accept-new"
+            " -o UserKnownHostsFile=%s"
+            " -o PasswordAuthentication=no -o ConnectionAttempts=1"
+            " -o ConnectTimeout=%d -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
+            " %s@%s %s"
+            % (shellquote(NODES_KEY), shellquote(str(node.get("port") or 22)),
+               shellquote(NODES_KNOWN_HOSTS), NODE_SSH_TIMEOUT,
+               shellquote(node.get("user") or "root"),
+               shellquote(node["host"]),
+               shellquote(remote)))
+
+
+def run_on_node(node, remote, timeout=30):
+    if node.get("local"):
+        return 1, "", "内部错误：local 节点不该走 ssh"
+    return sh(node_ssh(node, remote), timeout=timeout)
+
+
+def node_list_sites(node):
+    """返回 (sites, error)。sites 为 None 表示这个节点够不着。"""
+    if MOCK:
+        if node.get("local"):
+            return [dict(s, node="local") for s in MOCK_SITES], ""
+        return ([{"domain": "demo.example.com", "upstream": "127.0.0.1:8080",
+                  "dns01": True, "auth": True, "file": "demo.example.com.conf",
+                  "node": node["name"], "raw": ""}], "")
+    if node.get("local"):
+        return list_sites(), ""
+    rc, out, err = run_on_node(node, "list", timeout=NODE_SSH_TIMEOUT + 10)
+    if rc != 0:
+        return None, err or out or "ssh 连接失败"
+    sites = []
+    for line in out.splitlines():
+        # ⚠️ 这里只能用 >= 2，不能要求 3 段。
+        # 原因：sh() 会对整段 stdout 做一次 .strip()，而它只作用于**字符串末尾** ——
+        # 也就是只吃掉最后一行的收尾空白。node-agent 的 list 在「站点没有标记」时
+        # 第三个字段为空，行尾就带一个 TAB；如果这行恰好是最后一行，TAB 被 strip 掉，
+        # split 只剩 2 段，于是这个站点被静默丢弃（表现为随机少一个站点，极难查）。
+        parts = line.split("\t")
+        if len(parts) < 2 or not parts[0].strip():
+            continue
+        flags = parts[2] if len(parts) > 2 else ""
+        sites.append({
+            "domain": parts[0].strip(),
+            "upstream": parts[1].strip(),
+            "dns01": "dns01" in flags,
+            "auth": "auth" in flags,
+            "file": parts[0].strip() + ".conf",
+            "node": node["name"],
+            "raw": "",
+        })
+    return sites, ""
+
+
+def list_all_sites():
+    """聚合所有节点的站点，并附带每个节点的可达性报告。"""
+    out, reports = [], []
+    for n in all_nodes():
+        sites, err = node_list_sites(n)
+        reports.append({
+            "name": n["name"], "host": n.get("host"), "local": bool(n.get("local")),
+            "ok": sites is not None, "error": err or "", "count": len(sites or []),
+        })
+        out.extend(sites or [])
+    return out, reports
+
+
+def parse_openssl_date(raw):
+    """解析 openssl -enddate 的默认输出：Dec 26 03:10:45 2026 GMT"""
+    if not raw:
+        return None
+    txt = re.sub(r"\s+", " ", raw.strip().replace(" GMT", "")).strip()
+    try:
+        return datetime.datetime.strptime(txt, "%b %d %H:%M:%S %Y").replace(
+            tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None
+
+
+def get_all_certs():
+    """跨节点汇总证书。远端读不到就跳过该节点 —— 证书到期只是告警信息，
+    不该因为某台机器暂时不通就让整个面板的数据区空掉。"""
+    if MOCK:
+        return get_certs()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    out = []
+    for n in all_nodes():
+        if n.get("local"):
+            out.extend(get_certs())
+            continue
+        rc, res, _ = run_on_node(n, "certs", timeout=NODE_SSH_TIMEOUT + 10)
+        if rc != 0:
+            continue
+        for line in (res or "").splitlines():
+            parts = line.split("\t")
+            if len(parts) < 2 or not parts[0].strip():
+                continue
+            dt = parse_openssl_date(parts[1])
+            days = int((dt - now).total_seconds() // 86400) if dt else None
+            out.append({"name": parts[0].strip(),
+                        "expires": dt.isoformat() if dt else None,
+                        "days": days, "node": n["name"]})
+    out.sort(key=lambda c: (c["days"] is None, c["days"]))
+    return out
+
+
+def node_status(node):
+    if node.get("local"):
+        st = get_status()
+        return {"ok": True, "info": {"caddy": st.get("caddy"), "version": st.get("version"),
+                                     "hostname": "local(本机)",
+                                     "sites": st.get("siteCount")}}
+    rc, out, err = run_on_node(node, "status", timeout=NODE_SSH_TIMEOUT + 10)
+    if rc != 0:
+        return {"ok": False, "error": err or out or "ssh 连接失败"}
+    info = {}
+    for line in out.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            info[k.strip()] = v.strip()
+    return {"ok": True, "info": info}
+
+
+def node_add(payload):
+    name = (payload.get("name") or "").strip()
+    host = (payload.get("host") or "").strip()
+    user = (payload.get("user") or "root").strip()
+    try:
+        port = int(payload.get("port") or 22)
+    except (TypeError, ValueError):
+        return {"ok": False, "bad_request": True, "error": "端口要是数字"}
+    if not name or not host:
+        return {"ok": False, "bad_request": True, "error": "节点名和主机地址都要填"}
+    if name == "local":
+        return {"ok": False, "bad_request": True, "error": "local 是保留名，代表本机"}
+    if not RE_NODE_NAME.match(name):
+        return {"ok": False, "bad_request": True,
+                "error": "节点名只能用字母数字和 . _ -（不超过 32 位）"}
+    if re.search(r"\s", host):
+        return {"ok": False, "bad_request": True, "error": "主机地址不能含空格"}
+    if not 1 <= port <= 65535:
+        return {"ok": False, "bad_request": True, "error": "端口超出 1-65535"}
+    if re.search(r"[\s@:]", user):
+        return {"ok": False, "bad_request": True, "error": "用户名不能含空格、@ 或冒号"}
+    ok_host = (re.match(r"^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$", host)
+               or RE_IPV4.match(host)
+               or re.match(r"^\[?[0-9a-fA-F:]+\]?$", host))
+    if not ok_host:
+        return {"ok": False, "bad_request": True, "error": "主机地址格式不对"}
+
+    entry = {"name": name, "host": host, "port": port, "user": user}
+    nodes = _read_nodes()
+    for i, n in enumerate(nodes):
+        if n.get("name") == name:
+            nodes[i] = entry
+            _write_nodes(nodes)
+            return {"ok": True, "output": "已更新节点 %s" % name,
+                    "publicKey": ensure_node_key()}
+    nodes.append(entry)
+    _write_nodes(nodes)
+    return {"ok": True, "output": "已添加节点 %s" % name, "publicKey": ensure_node_key()}
+
+
+def node_remove(name):
+    nodes = _read_nodes()
+    left = [n for n in nodes if n.get("name") != name]
+    if len(left) == len(nodes):
+        return {"ok": False, "bad_request": True, "error": "没有这个节点：%s" % name}
+    _write_nodes(left)
+    return {"ok": True,
+            "output": "已从面板移除节点 %s\n"
+                      "注意：对方 authorized_keys 里的那把公钥不会自动删，要自己去清掉" % name}
+
+
 # ---------------- HTTP ----------------
 
 
@@ -578,6 +914,11 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
 
+    def _query(self):
+        if "?" not in self.path:
+            return {}
+        return dict(parse_qsl(self.path.split("?", 1)[1], keep_blank_values=True))
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
 
@@ -587,16 +928,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "version": VERSION, "mock": MOCK, "time": now_iso()})
         if path == "/api/status":
             return self._json(get_status())
+        if path == "/api/nodes":
+            nodes = all_nodes()
+            for n in nodes:
+                n["keyReady"] = os.path.isfile(NODES_KEY) if not MOCK else True
+            return self._json({
+                "nodes": nodes,
+                "publicKey": ensure_node_key(),
+                "keyPath": NODES_KEY,
+                "nodesFile": NODES_FILE,
+                "mock": MOCK,
+            })
         if path == "/api/sites":
-            sites = list_sites()
-            certs = {c["name"]: c for c in get_certs()}
+            sites, reports = list_all_sites()
+            certs = {c["name"]: c for c in get_all_certs()}
             for s in sites:
                 c = certs.get(s["domain"]) or certs.get("*." + ".".join(s["domain"].split(".")[1:]))
                 s["certDays"] = c["days"] if c else None
                 s["certExpires"] = c["expires"] if c else None
-            return self._json({"sites": sites, "mock": MOCK})
+            return self._json({"sites": sites, "nodes": reports, "mock": MOCK})
         if path == "/api/certs":
-            return self._json({"certs": get_certs()})
+            return self._json({"certs": get_all_certs()})
         if path == "/api/dns":
             domains = [s["domain"] for s in list_sites()]
             return self._json({"records": get_dns(domains)})
@@ -614,6 +966,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?", 1)[0]
         body = self._read_body()
+        if path == "/api/nodes":
+            res = node_add(body)
+            code = 200 if res.get("ok") else (400 if res.get("bad_request") else 500)
+            return self._json(res, code)
+        m = re.match(r"^/api/nodes/([^/]+)/test$", path)
+        if m:
+            name = unquote(m.group(1))
+            node = find_node(name)
+            if node is None:
+                return self._json({"ok": False, "bad_request": True,
+                                   "error": "没有这个节点：%s" % name}, 400)
+            res = node_status(node)
+            return self._json(res, 200 if res.get("ok") else 500)
         if path == "/api/sites":
             res = add_site(body)
             # 输入非法 → 400；脚本执行失败 → 500
@@ -633,9 +998,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         path = self.path.split("?", 1)[0]
+        if path.startswith("/api/nodes/"):
+            res = node_remove(unquote(path[len("/api/nodes/"):]))
+            code = 200 if res.get("ok") else (400 if res.get("bad_request") else 500)
+            return self._json(res, code)
         if path.startswith("/api/sites/"):
-            domain = path[len("/api/sites/"):]
-            return self._json(remove_site(domain))
+            domain = unquote(path[len("/api/sites/"):])
+            # 站点归属哪个节点靠 query 带过来：/api/sites/xxx?node=chuncheon
+            # 不带就是本机，兼容老前端。
+            node_name = self._query().get("node") or "local"
+            return self._json(remove_site(node_name, domain))
         return self._json({"ok": False, "error": "not found"}, 404)
 
 
