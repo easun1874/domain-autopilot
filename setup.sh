@@ -197,7 +197,8 @@ cat <<EOF
   sleep 20 && curl -sI https://app.example.com | head -1
 
 访问管理面板（在你自己电脑上开隧道，不要改监听地址）：
-  ssh -L 8848:127.0.0.1:8848 root@$(hostname -I 2>/dev/null | awk '{print $1}' || echo '服务器IP')
+  ssh -p 你的SSH端口 -L 8848:127.0.0.1:8848 root@服务器公网IP
+  （上面用你登录这台机器时的同一个地址和端口；内网 IP 连不上）
   然后浏览器打开 http://localhost:8848
 
 更新这套工具本身（幂等，站点和 Token 都不动）：
