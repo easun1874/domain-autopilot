@@ -167,9 +167,10 @@ summary{cursor:pointer; font-size:13px; color:var(--muted)}
         <h2>添加站点</h2>
         <label for="fNode">目标节点</label>
         <select id="fNode"></select>
-        <div class="hint">站点加在选中的那台机器上，证书也在那台上签。要让某台机器上
-          「只绑 127.0.0.1」的服务（比如各类面板）有 HTTPS，就得选它自己那台 ——
-          从别的机器反代是连不进去的。</div>
+        <div class="hint"><b>一般不用管这里，保持默认的「本机」就行。</b>站点加在本机上，上游可以直接
+          写别的机器的公网地址 —— 跨机反代<b>不需要</b>先加节点。只有一种情况要换成别的机器：
+          上游是 <code>127.0.0.1</code> 这类回环地址，而那个服务不在本机 —— 回环地址从别的机器
+          连不进去，只能由它所在的那台机器自己反代。添加时面板会先探一次，连不上会提醒你。</div>
 
         <label for="fDomain">域名</label>
         <input type="text" id="fDomain" placeholder="app.example.com">
@@ -633,17 +634,57 @@ async function loadAll() {
 
 $("btnRefresh").onclick = () => { loadAll(); loadTelegram(); };
 
+// 本机视角的可达性预检。Caddy 也跑在本机，所以「本机连不上」基本就等于站点将来会 502。
+// 连得上就静默放过（用户不需要知道有探测这回事），只有连不上 / 是回环地址时问一句。
+async function localUpstreamWarning(up) {
+  let p;
+  try {
+    p = await api("/api/probe?upstream=" + encodeURIComponent(up));
+  } catch (e) {
+    return null;                     // 探测自身出问题，不该拦住添加
+  }
+  if (!p.ok) return null;
+
+  if (p.loopback) {
+    return "上游是回环地址 " + p.target + "。\n\n" +
+      "回环地址的含义是「运行 Caddy 的那台机器自己」：\n" +
+      "· 服务就在本机 → 正确，继续\n" +
+      "· 服务在别的机器上 → 站点会指向错的东西，得去那台机器上添加\n\n" +
+      (p.reachable ? "（本机确实有东西在听这个端口）\n\n"
+                   : "（注意：本机现在没有服务在听这个端口）\n\n") +
+      "确认在本机添加？";
+  }
+  if (!p.reachable) {
+    return "本机连不到 " + p.target + (p.error ? "（" + p.error + "）" : "") + "。\n\n" +
+      "Caddy 也跑在本机，所以它多半同样连不上，站点会返回 502。\n" +
+      "常见原因：服务没起、端口没开、防火墙没放行本机。\n\n" +
+      "仍然添加？";
+  }
+  return null;
+}
+
 $("btnAdd").onclick = async () => {
   const domain = $("fDomain").value.trim();
   const upstream = $("fUpstream").value.trim();
   if (!domain || !upstream) { showOut("域名和上游都要填", "err"); return; }
+  const node = $("fNode").value || "local";
   $("btnAdd").disabled = true;
+  if (node === "local") {
+    // 探测最长要等 3 秒，先把按钮锁上并给个说明，免得看起来像卡住了
+    showOut("正在从本机探测 " + upstream + " 的连通性…");
+    const why = await localUpstreamWarning(upstream);
+    if (why && !confirm(why)) {
+      showOut("已取消，没有做任何改动");
+      $("btnAdd").disabled = false;        // 别把按钮留在禁用态
+      return;
+    }
+  }
   const r = await api("/api/sites", {
     method: "POST",
     body: JSON.stringify({
       domain: domain,
       upstream: upstream,
-      node: $("fNode").value || "local",
+      node: node,
       dns01: $("fDns01").checked,
       useProxy: $("fUseProxy").checked,
       noApiDns: $("fNoApiDns").checked,

@@ -12,6 +12,7 @@ import glob
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -107,6 +108,70 @@ def list_sites():
     if not os.path.isdir(SITES_DIR):
         return []
     return [parse_conf(p) for p in sorted(glob.glob(os.path.join(SITES_DIR, "*.conf")))]
+
+
+# ---------------- 上游可达性探测 ----------------
+#
+# 存在的理由：加站点时「在哪台机器上加」这件事，绝大多数情况下不需要用户来选 ——
+# 默认就是面板本机。只有当面板本机**连不到**那个上游时才说明选错了地方，
+# 那时再提示。所以这里提供一个从面板本机出发的 TCP 探测。
+#
+# 与 add-site.sh 同一口径：剥掉 scheme 与路径后只看 host:port。
+# 带路径是允许的（路径属**访问 URL**，Caddy 原样透传），探测只关心连不连得上。
+SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*)://(.*)$")
+
+
+def parse_upstream(up):
+    """把上游拆成 (host, port, loopback)；解析不出来返回 (None, None, False)。"""
+    rest = (up or "").strip()
+    m = SCHEME_RE.match(rest)
+    scheme = m.group(1).lower() if m else ""
+    if m:
+        rest = m.group(2)
+    rest = rest.split("/", 1)[0]
+    if rest.startswith("["):                       # IPv6 字面量 [::1]:8080
+        host, _, tail = rest[1:].partition("]")
+        port = tail[1:] if tail.startswith(":") else ""
+    else:
+        head, sep, tail = rest.rpartition(":")
+        host, port = (head, tail) if sep and tail.isdigit() else (rest, "")
+    if not host:
+        return None, None, False
+    try:
+        port = int(port)
+    except ValueError:
+        port = {"https": 443, "http": 80}.get(scheme, 80)
+    low = host.lower()
+    loopback = low in ("localhost", "::1") or low.startswith("127.")
+    return host, port, loopback
+
+
+def probe_upstream(up, timeout=3.0):
+    """从面板本机探一次 TCP。
+
+    ⚠️ 回环地址的结果**天然有歧义**：探到的可能是面板自己（127.0.0.1:8848 就是本面板），
+    所以 loopback 要单独返回，由调用方决定怎么提示 —— 只看 reachable 会漏掉这类误判。
+
+    安全性：这个接口让调用者能用面板的身份去连任意 host:port，是个 SSRF 面。接受它的
+    理由是面板本身已有 basic_auth 兜底，而且它本来就拥有「加/删站点」这种更大的能力；
+    探测只多暴露「某端口通不通」这一位信息。别把它放到没有鉴权的地方去。
+    """
+    if re.search(r"\s", up or ""):
+        return {"ok": False, "bad_request": True, "error": "上游地址不能含空格"}
+    host, port, loopback = parse_upstream(up or "")
+    if not host:
+        return {"ok": False, "bad_request": True, "error": "看不懂这个上游地址：%s" % up}
+    res = {"ok": True, "target": "%s:%s" % ("[%s]" % host if ":" in host else host, port),
+           "loopback": loopback}
+    t0 = time.time()
+    try:
+        socket.create_connection((host, port), timeout=timeout).close()
+        res["reachable"] = True
+        res["ms"] = int((time.time() - t0) * 1000)
+    except OSError as exc:
+        res["reachable"] = False
+        res["error"] = str(exc) or exc.__class__.__name__
+    return res
 
 
 def add_site(payload):
@@ -949,6 +1014,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"sites": sites, "nodes": reports, "mock": MOCK})
         if path == "/api/certs":
             return self._json({"certs": get_all_certs()})
+        if path == "/api/probe":
+            # 只探「面板本机」这个视角。节点不是 local 时前端不调它 ——
+            # 那时用户已经明确指定了机器，可达性取决于那台机器，本机探出来没意义。
+            #
+            # 注意「探不通」不是错误：它是正常结果（ok=true + reachable=false），
+            # 只有参数本身不对才回 400。
+            up = self._query().get("upstream") or ""
+            if not up.strip():
+                return self._json({"ok": False, "bad_request": True,
+                                   "error": "缺 upstream 参数"}, 400)
+            res = probe_upstream(up)
+            code = 200 if res.get("ok") else (400 if res.get("bad_request") else 500)
+            return self._json(res, code)
         if path == "/api/dns":
             domains = [s["domain"] for s in list_sites()]
             return self._json({"records": get_dns(domains)})
