@@ -182,15 +182,18 @@ ssh -N -L 8848:127.0.0.1:8848 -p 2222 root@203.0.113.10
 
 ## 2. 拿 Cloudflare API Token（一次性）
 
-1. 登录 `dash.cloudflare.com` → 右上角头像 → **My Profile** → **API Tokens**
-2. 点 **Create Token** → 选 **Edit zone DNS** 模板（自定义起见，也可以用 **Custom token**）
-3. 权限确认是这两条（少一条都会失败）：
-   - `Zone → DNS → Edit`
-   - `Zone → Zone → Read`
-   - 只需要这两个。不要勾 Account / Workers / Zone Settings 一类的，没必要
-4. 域名范围 **Zone Resources**：只跑一个域名就选 **Specific zone** 并勾它；
-   以后还要加别的域，就选 **Include → All zones**
-5. 点 **Continue to summary** → **Create Token** → 复制那串 token
+下面写的是**中文界面**的措辞，英文界面按括号里的对照就行。
+
+1. 登录 `dash.cloudflare.com` → 右上角头像 → **配置文件**（My Profile）→ 左侧 **API 令牌**（API Tokens）
+2. 点 **创建令牌**（Create Token）→ 选「**编辑区域 DNS**」→ 点它右边的 **使用模板**
+3. **权限**（Permissions）确认是这两条（少一条都会失败）：
+   - `区域 → DNS → 编辑`（Zone → DNS → Edit）
+   - `区域 → 区域 → 读取`（Zone → Zone → Read）
+   - 只需要这两个。不要勾 账号 / Workers / 区域设置 一类的，没必要
+4. **区域资源**（Zone Resources）→ 点选「**包含**」（Include）：
+   - 只跑一个域名 → **特定区域**（Specific zone）→ 勾它
+   - 以后还要加别的域 → **所有区域**（All zones）
+5. 点 **继续到摘要**（Continue to summary）→ **创建令牌** → 复制那串 token
    > **只显示这一次**，关掉页面就再也看不全了，先存到密码管理器
 
 ### 拿到之后先自己验一遍，别装到一半才发现
