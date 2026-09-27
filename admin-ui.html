@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Caddy 站点管理面板</title>
+<style>
+:root{
+  --bg:#F7F6F3; --card:#FFFFFF; --line:#E3E1DA;
+  --text:#2C2C2A; --muted:#5F5E5A; --faint:#888780;
+  --blue:#185FA5; --blue-bg:#E6F1FB;
+  --teal:#0F6E56; --teal-bg:#E1F5EE;
+  --amber:#854F0B; --amber-bg:#FAEEDA;
+  --red:#A32D2D; --red-bg:#FCEBEB;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; padding:24px;
+  font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  font-size:14px; line-height:1.6; color:var(--text); background:var(--bg);
+}
+h1{font-size:18px; font-weight:500; margin:0}
+h2{font-size:14px; font-weight:500; margin:0 0 12px; color:var(--text)}
+a{color:var(--blue)}
+.wrap{max-width:1180px; margin:0 auto}
+.head{display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:16px}
+.head .spacer{flex:1}
+.badges{display:flex; gap:8px; flex-wrap:wrap}
+.badge{
+  padding:3px 10px; border-radius:999px; font-size:12px;
+  background:var(--blue-bg); color:var(--blue); border:1px solid rgba(24,95,165,.18);
+}
+.badge.ok{background:var(--teal-bg); color:var(--teal); border-color:rgba(15,110,86,.18)}
+.badge.warn{background:var(--amber-bg); color:var(--amber); border-color:rgba(133,79,11,.18)}
+.badge.bad{background:var(--red-bg); color:var(--red); border-color:rgba(163,45,45,.18)}
+button{
+  font:inherit; font-size:13px; padding:6px 14px; border-radius:8px; cursor:pointer;
+  border:1px solid var(--line); background:var(--card); color:var(--text);
+}
+button:hover{border-color:var(--faint)}
+button.primary{background:var(--blue); color:#fff; border-color:var(--blue)}
+button.primary:hover{filter:brightness(1.06)}
+button.danger{color:var(--red); border-color:rgba(163,45,45,.3)}
+button:disabled{opacity:.5; cursor:not-allowed}
+.banner{
+  padding:10px 14px; border-radius:10px; margin-bottom:16px; font-size:13px;
+  background:var(--amber-bg); color:var(--amber); border:1px solid rgba(133,79,11,.2);
+}
+.banner.demo{background:var(--blue-bg); color:var(--blue); border-color:rgba(24,95,165,.2)}
+.grid{display:grid; grid-template-columns:1.55fr 1fr; gap:16px; align-items:start}
+@media (max-width:900px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px}
+.card + .card{margin-top:16px}
+table{width:100%; border-collapse:collapse; font-size:13px}
+th{
+  text-align:left; font-weight:500; color:var(--muted); font-size:12px;
+  padding:6px 8px; border-bottom:1px solid var(--line);
+}
+td{padding:9px 8px; border-bottom:1px solid #F0EEE8; vertical-align:middle}
+tr:last-child td{border-bottom:0}
+.dom{font-weight:500}
+.up{color:var(--muted); font-size:12px; font-family:ui-monospace,Menlo,Consolas,monospace}
+.tag{
+  display:inline-block; padding:1px 7px; border-radius:6px; font-size:11px;
+  background:#F1EFE8; color:var(--muted); margin-right:4px;
+}
+.tag.on{background:var(--teal-bg); color:var(--teal)}
+.tag.off{background:var(--red-bg); color:var(--red)}
+.days{font-weight:500}
+.days.ok{color:var(--teal)} .days.warn{color:var(--amber)} .days.bad{color:var(--red)}
+label{display:block; font-size:12px; color:var(--muted); margin:10px 0 4px}
+input[type=text]{
+  width:100%; font:inherit; font-size:13px; padding:7px 10px; border-radius:8px;
+  border:1px solid var(--line); background:#FFF; color:var(--text);
+}
+input[type=text]:focus{outline:none; border-color:var(--blue)}
+.checks{display:flex; flex-direction:column; gap:6px; margin-top:10px}
+.chk{display:flex; align-items:center; gap:7px; font-size:13px; color:var(--text)}
+.chk input{margin:0}
+.hint{font-size:12px; color:var(--faint); margin-top:4px}
+.row{display:flex; gap:8px; margin-top:14px; align-items:center}
+pre{
+  margin:0; padding:12px; background:#F7F6F3; border:1px solid var(--line); border-radius:8px;
+  font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px;
+  max-height:280px; overflow:auto; white-space:pre-wrap; word-break:break-all;
+}
+.out{
+  margin-top:12px; padding:10px 12px; border-radius:8px; font-size:12px;
+  background:#F7F6F3; border:1px solid var(--line); white-space:pre-wrap; display:none;
+  font-family:ui-monospace,Menlo,Consolas,monospace;
+}
+.out.show{display:block}
+.out.err{background:var(--red-bg); color:var(--red); border-color:rgba(163,45,45,.25)}
+.out.ok{background:var(--teal-bg); color:var(--teal); border-color:rgba(15,110,86,.25)}
+.empty{color:var(--faint); font-size:13px; padding:18px 0; text-align:center}
+details{margin-top:6px}
+summary{cursor:pointer; font-size:13px; color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="head">
+    <h1>Caddy 站点管理面板</h1>
+    <div class="badges" id="badges"></div>
+    <div class="spacer"></div>
+    <button id="btnRefresh" class="primary">刷新</button>
+  </div>
+
+  <div id="banners"></div>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <h2>站点 <span id="siteCount" class="hint"></span></h2>
+        <div id="siteTable"></div>
+      </div>
+
+      <div class="card">
+        <h2>Caddyfile</h2>
+        <details>
+          <summary>展开查看当前主配置</summary>
+          <pre id="caddyfile" style="margin-top:10px">加载中…</pre>
+        </details>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>添加站点</h2>
+        <label for="fDomain">域名</label>
+        <input type="text" id="fDomain" placeholder="app.example.com">
+        <label for="fUpstream">上游地址</label>
+        <input type="text" id="fUpstream" placeholder="127.0.0.1:8080 或 192.168.1.10:5000 或 wiki:3000">
+        <div class="hint">本机端口、局域网 IP、Docker 服务名都可以</div>
+
+        <div class="checks">
+          <label class="chk"><input type="checkbox" id="fDns01"> 强制 DNS-01 签发</label>
+          <label class="chk"><input type="checkbox" id="fNoProxy"> 关闭 Cloudflare 代理</label>
+          <label class="chk"><input type="checkbox" id="fNoApiDns"> 不自动建 DNS 记录</label>
+        </div>
+        <label for="fIp">源站 IP（留空自动检测）</label>
+        <input type="text" id="fIp" placeholder="203.0.113.10">
+
+        <div class="row">
+          <button id="btnAdd" class="primary">添加</button>
+          <button id="btnSync">跑一次巡检</button>
+        </div>
+        <div class="out" id="out"></div>
+      </div>
+
+      <div class="card">
+        <h2>证书到期</h2>
+        <div id="certList"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function api(path, opts) {
+  opts = opts || {};
+  const r = await fetch(path, Object.assign({
+    headers: {"Content-Type": "application/json"}
+  }, opts));
+  return r.json();
+}
+
+function daysClass(d) {
+  if (d === null || d === undefined) return "";
+  if (d <= 7) return "bad";
+  if (d <= 30) return "warn";
+  return "ok";
+}
+
+function showOut(text, kind) {
+  const el = $("out");
+  el.textContent = text || "";
+  el.className = "out show" + (kind ? " " + kind : "");
+}
+
+function renderBadges(st) {
+  const b = [];
+  const on = st.caddy === "active" || st.caddy === "running";
+  b.push(['<span class="badge ' + (on ? "ok" : "bad") + '">Caddy ' + (on ? "运行中" : st.caddy) + '</span>']);
+  b.push(['<span class="badge">' + st.version + '</span>']);
+  const m = st.modules || {};
+  b.push(['<span class="badge ' + (m.dnsProviderCloudflare ? "ok" : "bad") + '">CF DNS 模块 ' + (m.dnsProviderCloudflare ? "已装" : "缺失") + '</span>']);
+  b.push(['<span class="badge ' + (m.dynamicDns ? "ok" : "warn") + '">dynamic_dns ' + (m.dynamicDns ? "已装" : "未装") + '</span>']);
+  b.push(['<span class="badge ' + (st.acmeDns ? "ok" : "warn") + '">DNS-01 签发 ' + (st.acmeDns ? "已开" : "未开") + '</span>']);
+  b.push(['<span class="badge ' + (st.tokenReady ? "ok" : "bad") + '">Token ' + (st.tokenReady ? "已配置" : "缺失") + '</span>']);
+  if (st.mock) b.push(['<span class="badge">演示模式</span>']);
+  $("badges").innerHTML = b.join("");
+}
+
+function renderBanners(st) {
+  const out = [];
+  if (st.mock) {
+    out.push('<div class="banner demo">演示模式：当前数据都是假的，不会碰你的 VPS。真实部署见 README。</div>');
+  }
+  const m = st.modules || {};
+  if (!m.dnsProviderCloudflare || !st.acmeDns) {
+    out.push('<div class="banner">还没启用 Caddy 原生的 Cloudflare 集成。在 VPS 上跑一次 <b>bash enable-cf-native.sh</b>，就能拿到 DNS-01 签发（不占 80 端口、可签泛域名）。</div>');
+  }
+  $("banners").innerHTML = out.join("");
+}
+
+function renderSites(sites, records) {
+  const recMap = {};
+  (records || []).forEach(r => { recMap[r.domain] = r; });
+
+  if (!sites.length) {
+    $("siteTable").innerHTML = '<div class="empty">还没有站点，用右边的表单加一个</div>';
+    $("siteCount").textContent = "";
+    return;
+  }
+  $("siteCount").textContent = "共 " + sites.length + " 个";
+
+  let html = '<table><thead><tr><th>域名</th><th>CF 记录</th><th>证书</th><th></th></tr></thead><tbody>';
+  sites.forEach(s => {
+    const rec = recMap[s.domain];
+    let dnsCell = '<span class="tag off">无记录</span>';
+    if (rec && rec.found) {
+      dnsCell = '<span class="tag on">' + rec.type + '</span><span class="up">' + (rec.value || "") + '</span>'
+        + (rec.proxied ? ' <span class="tag on">已代理</span>' : ' <span class="tag">仅 DNS</span>');
+    } else if (rec && rec.error) {
+      dnsCell = '<span class="tag off">' + rec.error + '</span>';
+    }
+
+    let certCell = '<span class="days">—</span>';
+    if (s.certDays !== null && s.certDays !== undefined) {
+      certCell = '<span class="days ' + daysClass(s.certDays) + '">' + s.certDays + ' 天</span>';
+    }
+
+    html += '<tr>'
+      + '<td><div class="dom">' + s.domain + '</div><div class="up">' + s.upstream + '</div>'
+      + (s.dns01 ? '<span class="tag on">DNS-01</span>' : '') + '</td>'
+      + '<td>' + dnsCell + '</td>'
+      + '<td>' + certCell + '</td>'
+      + '<td style="text-align:right"><button class="danger" data-del="' + s.domain + '">删除</button></td>'
+      + '</tr>';
+  });
+  html += '</tbody></table>';
+  $("siteTable").innerHTML = html;
+
+  document.querySelectorAll("[data-del]").forEach(btn => {
+    btn.onclick = async () => {
+      const d = btn.getAttribute("data-del");
+      if (!confirm("删除站点 " + d + "？\n会同时删掉 Cloudflare 里的 DNS 记录。")) return;
+      btn.disabled = true;
+      const r = await api("/api/sites/" + encodeURIComponent(d), {method: "DELETE"});
+      showOut(r.output || r.error || JSON.stringify(r), r.ok ? "ok" : "err");
+      await loadAll();
+    };
+  });
+}
+
+function renderCerts(certs) {
+  if (!certs.length) {
+    $("certList").innerHTML = '<div class="empty">没有证书信息</div>';
+    return;
+  }
+  let html = '<table><tbody>';
+  certs.slice(0, 12).forEach(c => {
+    const d = c.days;
+    html += '<tr><td class="up">' + c.name + '</td>'
+      + '<td style="text-align:right;white-space:nowrap">'
+      + (d === null || d === undefined
+          ? '<span class="days">未知</span>'
+          : '<span class="days ' + daysClass(d) + '">' + d + ' 天</span>')
+      + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  $("certList").innerHTML = html;
+}
+
+async function loadAll() {
+  $("btnRefresh").disabled = true;
+  try {
+    const st = await api("/api/status");
+    renderBadges(st);
+    renderBanners(st);
+
+    const sr = await api("/api/sites");
+    const dr = await api("/api/dns");
+    renderSites(sr.sites || [], dr.records || []);
+
+    const cr = await api("/api/certs");
+    renderCerts(cr.certs || []);
+
+    const cf = await api("/api/config");
+    $("caddyfile").textContent = cf.caddyfile || "(空)";
+  } catch (e) {
+    showOut("加载失败: " + e.message, "err");
+  } finally {
+    $("btnRefresh").disabled = false;
+  }
+}
+
+$("btnRefresh").onclick = loadAll;
+
+$("btnAdd").onclick = async () => {
+  const domain = $("fDomain").value.trim();
+  const upstream = $("fUpstream").value.trim();
+  if (!domain || !upstream) { showOut("域名和上游都要填", "err"); return; }
+  $("btnAdd").disabled = true;
+  const r = await api("/api/sites", {
+    method: "POST",
+    body: JSON.stringify({
+      domain: domain,
+      upstream: upstream,
+      dns01: $("fDns01").checked,
+      noProxy: $("fNoProxy").checked,
+      noApiDns: $("fNoApiDns").checked,
+      ip: $("fIp").value.trim() || null
+    })
+  });
+  showOut(r.output || r.error || JSON.stringify(r), r.ok ? "ok" : "err");
+  $("btnAdd").disabled = false;
+  if (r.ok) { $("fDomain").value = ""; $("fUpstream").value = ""; }
+  await loadAll();
+};
+
+$("btnSync").onclick = async () => {
+  $("btnSync").disabled = true;
+  const r = await api("/api/refresh", {method: "POST"});
+  showOut(r.output || r.error || JSON.stringify(r), r.ok ? "ok" : "err");
+  $("btnSync").disabled = false;
+  await loadAll();
+};
+
+loadAll();
+</script>
+</body>
+</html>

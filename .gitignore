@@ -1,0 +1,21 @@
+# 本地与运行时产物
+__pycache__/
+*.py[cod]
+*.bak
+*.bak.*
+*.tmp
+
+# 永远不要提交的敏感文件
+.cf_token
+.cf_token.*
+cf.env
+.env
+*.pem
+*.key
+*.crt
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

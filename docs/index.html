@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>domain-autopilot — 一台 VPS，无限HTTPS站点，证书和DNS全自动</title>
+<meta name="description" content="Caddy + Cloudflare API：一行命令加站点，自动建 DNS 记录、自动签发续签 Let's Encrypt 证书、自动配反向代理，附带本地管理面板。">
+<style>
+:root{
+  --bg:#ffffff; --bg-soft:#f6f8fa; --bg-inset:#f6f8fa;
+  --text:#1f2328; --muted:#59636e; --border:#d1d9e0; --border-soft:#d8dee4;
+  --accent:#0969da; --accent-soft:#ddf4ff; --green:#1a7f37; --green-soft:#dafbe1;
+  --amber:#9a6700; --amber-soft:#fff8c5; --purple:#8250df;
+  --radius:10px;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0d1117; --bg-soft:#161b22; --bg-inset:#010409;
+    --text:#e6edf3; --muted:#8b949e; --border:#30363d; --border-soft:#21262d;
+    --accent:#58a6ff; --accent-soft:#0c2d6b; --green:#3fb950; --green-soft:#0f5323;
+    --amber:#d29922; --amber-soft:#3b2f0a; --purple:#a371f7;
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",Helvetica,Arial,sans-serif;
+  font-size:16px; line-height:1.7; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:960px; margin:0 auto; padding:0 24px}
+a{color:var(--accent); text-decoration:none}
+a:hover{text-decoration:underline}
+code,kbd{font-family:var(--mono); font-size:.88em}
+
+/* ---------- nav ---------- */
+nav{position:sticky; top:0; z-index:50; background:color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter:blur(10px); border-bottom:1px solid var(--border-soft)}
+nav .wrap{display:flex; align-items:center; gap:20px; height:56px}
+nav .brand{font-weight:600; font-family:var(--mono); font-size:15px; color:var(--text)}
+nav .spacer{flex:1}
+nav a.navlink{color:var(--muted); font-size:14px}
+nav a.navlink:hover{color:var(--text)}
+
+/* ---------- hero ---------- */
+header.hero{padding:72px 0 48px; border-bottom:1px solid var(--border-soft); background:var(--bg)}
+h1{font-size:42px; line-height:1.2; margin:0 0 16px; letter-spacing:-.02em}
+.tagline{font-size:20px; color:var(--muted); margin:0 0 8px; max-width:720px}
+.sub{color:var(--muted); margin:0 0 24px; max-width:720px}
+.badges{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:32px}
+.badge{font-size:12px; font-family:var(--mono); padding:3px 10px; border-radius:999px;
+  border:1px solid var(--border); color:var(--muted); background:var(--bg-soft)}
+.badge.hi{background:var(--green-soft); color:var(--green); border-color:transparent}
+.badge.ac{background:var(--accent-soft); color:var(--accent); border-color:transparent}
+
+/* ---------- install box ---------- */
+.term{border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; background:var(--bg-inset)}
+.term-bar{display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--border-soft); background:var(--bg-soft)}
+.dot{width:11px; height:11px; border-radius:50%; background:var(--border)}
+.term-tab{font-size:12px; font-family:var(--mono); color:var(--muted); padding:2px 8px; border-radius:6px; cursor:pointer; user-select:none}
+.term-tab.on{background:var(--bg); color:var(--text); box-shadow:0 0 0 1px var(--border-soft)}
+.copy{margin-left:auto; font-size:12px; font-family:var(--mono); color:var(--muted);
+  background:transparent; border:1px solid var(--border); border-radius:6px; padding:2px 8px; cursor:pointer}
+.copy:hover{color:var(--text); border-color:var(--muted)}
+.term pre{margin:0; padding:16px; overflow-x:auto; font-family:var(--mono); font-size:13.5px; line-height:1.8; color:var(--text)}
+.term pre .c{color:var(--muted)}
+.term pre .p{color:var(--green)}
+.pane{display:none}
+.pane.on{display:block}
+.note{font-size:13px; color:var(--muted); margin-top:10px}
+
+/* ---------- sections ---------- */
+section{padding:56px 0; border-bottom:1px solid var(--border-soft)}
+h2{font-size:26px; margin:0 0 8px; letter-spacing:-.01em}
+h2 .num{font-family:var(--mono); color:var(--accent); font-size:16px; margin-right:10px}
+.lead{color:var(--muted); margin:0 0 28px; max-width:720px}
+
+/* cards */
+.grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px}
+.card{border:1px solid var(--border); border-radius:var(--radius); padding:20px; background:var(--bg)}
+.card h3{margin:0 0 8px; font-size:16px; display:flex; align-items:center; gap:8px}
+.card p{margin:0; color:var(--muted); font-size:14.5px}
+.card .ico{width:18px; height:18px; flex:none; color:var(--accent)}
+.card.warn .ico{color:var(--amber)}
+
+/* table */
+table{width:100%; border-collapse:collapse; font-size:14.5px; margin-top:8px}
+th,td{text-align:left; padding:10px 12px; border-bottom:1px solid var(--border-soft); vertical-align:top}
+th{color:var(--muted); font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:.04em}
+tbody tr:hover{background:var(--bg-soft)}
+td code{background:var(--bg-soft); padding:1px 5px; border-radius:4px; border:1px solid var(--border-soft)}
+.scroll{overflow-x:auto}
+
+/* diagram */
+.diagram{background:var(--bg-soft); border:1px solid var(--border-soft); border-radius:var(--radius); padding:20px; margin:8px 0}
+.diagram svg{display:block; width:100%; height:auto}
+.legend{display:flex; flex-wrap:wrap; gap:18px; margin-top:14px; font-size:13px; color:var(--muted)}
+.legend span{display:flex; align-items:center; gap:6px}
+.sw{width:12px; height:12px; border-radius:3px; display:inline-block}
+
+ul.checks{list-style:none; padding:0; margin:0}
+ul.checks li{padding:6px 0 6px 26px; position:relative; color:var(--muted); font-size:14.5px}
+ul.checks li::before{content:""; position:absolute; left:4px; top:13px; width:10px; height:6px;
+  border-left:2px solid var(--green); border-bottom:2px solid var(--green); transform:rotate(-45deg)}
+ul.checks li b{color:var(--text); font-weight:600}
+
+footer{padding:40px 0 56px; color:var(--muted); font-size:14px}
+footer .cols{display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:24px}
+footer h4{margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted)}
+footer ul{list-style:none; margin:0; padding:0}
+footer li{margin:4px 0}
+
+@media (max-width:640px){
+  h1{font-size:30px} .tagline{font-size:17px} header.hero{padding:44px 0 32px}
+  section{padding:40px 0} .wrap{padding:0 18px}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <span class="brand">domain-autopilot</span>
+    <span class="spacer"></span>
+    <a class="navlink" href="#arch">架构</a>
+    <a class="navlink" href="#features">特性</a>
+    <a class="navlink" href="#why">选型</a>
+    <a class="navlink" href="#files">文件</a>
+    <a class="navlink" href="https://github.com/easun1874/domain-autopilot">GitHub</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <h1>一台 VPS，无限 HTTPS 站点</h1>
+    <p class="tagline">加站点只用一行命令。Cloudflare DNS 记录、Let's Encrypt 证书签发与续签、反向代理配置，全自动。</p>
+    <p class="sub">你有公网 IP、有域名托管在 Cloudflare、想在上面跑一堆服务 —— 这套方案把「配 DNS、申请证书、配反代、忘记续签」这四件破事一次性解决掉。</p>
+
+    <div class="badges">
+      <span class="badge hi">自动 HTTPS</span>
+      <span class="badge hi">自动续签</span>
+      <span class="badge ac">Cloudflare API</span>
+      <span class="badge ac">DNS-01 / 泛域名</span>
+      <span class="badge">零 pip 依赖</span>
+      <span class="badge">不绑定 Docker</span>
+      <span class="badge">MIT</span>
+    </div>
+
+    <div class="term">
+      <div class="term-bar">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="term-tab on" data-p="p1">一键部署</span>
+        <span class="term-tab" data-p="p2">手动两步</span>
+        <span class="term-tab" data-p="p3">加站点</span>
+        <button class="copy" id="copybtn">复制</button>
+      </div>
+      <div class="pane on" id="p1"><pre><span class="c"># 在你自己的电脑上，不是服务器上</span>
+cd domain-autopilot
+bash deploy.sh root@<span class="p">你的IP</span> <span class="c">-p 22</span>
+
+<span class="c"># 部署脚本会做：本地文件检查 → 远程预检 → 上传 → 安装</span>
+<span class="c"># 装完用这条命令开面板隧道</span>
+ssh -N -L 8848:127.0.0.1:8848 root@<span class="p">你的IP</span></pre></div>
+      <div class="pane" id="p2"><pre><span class="c"># 上传整个目录（tar 管道，一次连接搞定）</span>
+tar czf - -C domain-autopilot --exclude=__pycache__ . \
+  | ssh root@<span class="p">你的IP</span> <span class="p">'mkdir -p /root/domain-autopilot &amp;&amp; tar xzf - -C /root/domain-autopilot'</span>
+
+<span class="c"># 安装</span>
+ssh -t root@<span class="p">你的IP</span> <span class="p">'cd /root/domain-autopilot &amp;&amp; bash setup.sh'</span></pre></div>
+      <div class="pane" id="p3"><pre><span class="c"># 一行加站点：DNS 记录 + 证书 + 反代 + 热加载</span>
+add-site.sh app.example.com 127.0.0.1:8080
+
+<span class="c"># 上游可以是本机端口、局域网 IP、Docker 服务名</span>
+add-site.sh nas.example.com  192.168.1.10:5000
+add-site.sh wiki.example.com wiki:3000
+
+<span class="c"># 20 秒后验证</span>
+curl -sI https://app.example.com | head -1</pre></div>
+    </div>
+    <p class="note">Token 只需粘一次，落到 <code>/etc/caddy/cf.env</code>（600 权限），Caddy、脚本、面板三方共用。</p>
+  </div>
+</header>
+
+<section id="arch">
+  <div class="wrap">
+    <h2><span class="num">01</span>流量怎么走</h2>
+    <p class="lead">外部只暴露 443。证书由 Caddy 用 DNS-01 向 Let's Encrypt 申请，DNS 记录由 Caddy 直接调 Cloudflare 维护 —— 全程没有手写 API 调用。</p>
+
+    <div class="diagram">
+      <svg viewBox="0 0 900 300" role="img" aria-label="流量从浏览器经 Cloudflare 到 VPS 内 Caddy 反代层再转发到各服务">
+        <style>
+          /* SVG 的 presentation attribute 不支持 var()，必须走 CSS 类 */
+          .bx{fill:var(--bg);stroke:var(--border);stroke-width:1}
+          .bxa{stroke:var(--accent)}
+          .bs{fill:var(--bg-soft);stroke:var(--border-soft);stroke-width:1}
+          .bi{fill:var(--bg-inset);stroke:var(--border);stroke-width:1}
+          .xa{fill:var(--accent-soft);stroke:var(--accent);stroke-width:.8}
+          .xg{fill:var(--green-soft);stroke:var(--green);stroke-width:.8}
+          .tt{fill:var(--text)}
+          .tm{fill:var(--muted)}
+          .ta{fill:var(--accent)}
+          .tg{fill:var(--green)}
+          .la{stroke:var(--accent);stroke-width:1.6;fill:none}
+          .lg{stroke:var(--green);stroke-width:1.6;fill:none}
+          .lgr{stroke:var(--green);stroke-width:1.2;stroke-dasharray:5 4;fill:none}
+          .lm{stroke:var(--muted);stroke-width:1.4;fill:none}
+          #m1 path{stroke:var(--accent)}
+          #m2 path{stroke:var(--green)}
+          #m3 path{stroke:var(--muted)}
+        </style>
+        <defs>
+          <marker id="m1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke-width="1.6" stroke-linecap="round"/></marker>
+          <marker id="m2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke-width="1.6" stroke-linecap="round"/></marker>
+          <marker id="m3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke-width="1.4" stroke-linecap="round"/></marker>
+        </defs>
+
+        <text x="60" y="34" font-size="13" class="tm" font-family="monospace">浏览器</text>
+        <rect x="60" y="44" width="150" height="46" rx="8" class="bx"/>
+        <text x="135" y="67" text-anchor="middle" dominant-baseline="central" font-size="14" class="tt">HTTPS 请求</text>
+        <text x="135" y="83" text-anchor="middle" dominant-baseline="central" font-size="11.5" class="tm">app.example.com</text>
+
+        <line x1="210" y1="67" x2="290" y2="67" class="la" marker-end="url(#m1)"/>
+
+        <rect x="296" y="34" width="230" height="66" rx="10" class="xa"/>
+        <text x="411" y="55" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="600" class="ta">Cloudflare</text>
+        <text x="411" y="74" text-anchor="middle" dominant-baseline="central" font-size="11.5" class="ta">代理 · 隐藏源站 IP · DNS 托管</text>
+        <text x="411" y="90" text-anchor="middle" dominant-baseline="central" font-size="11" class="ta">橙色云开启时源站不暴露</text>
+
+        <line x1="526" y1="67" x2="600" y2="67" class="lg" marker-end="url(#m2)"/>
+
+        <rect x="606" y="30" width="230" height="50" rx="8" class="xg"/>
+        <text x="721" y="48" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="600" class="tg">Let's Encrypt</text>
+        <text x="721" y="65" text-anchor="middle" dominant-baseline="central" font-size="11.5" class="tg">DNS-01 签发 · 90 天自动续</text>
+
+        <path d="M600 82 C 560 100, 700 120, 606 132" class="lgr" marker-end="url(#m2)"/>
+
+        <rect x="150" y="150" width="600" height="132" rx="14" class="bi"/>
+        <text x="170" y="172" font-size="12.5" class="tm" font-family="monospace">VPS · 公网 IP — 防火墙只放行 443 / SSH（80 可关）</text>
+
+        <rect x="180" y="188" width="300" height="60" rx="9" class="bx bxa"/>
+        <text x="330" y="208" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="600" class="ta">Caddy 反代层</text>
+        <text x="330" y="228" text-anchor="middle" dominant-baseline="central" font-size="11.5" class="ta">统一 TLS 终止 · 证书管理 · DNS 维护</text>
+
+        <rect x="520" y="188" width="200" height="60" rx="9" class="bx"/>
+        <text x="620" y="205" text-anchor="middle" dominant-baseline="central" font-size="12.5" class="tt">管理面板</text>
+        <text x="620" y="222" text-anchor="middle" dominant-baseline="central" font-size="11.5" class="tm">127.0.0.1:8848</text>
+        <text x="620" y="237" text-anchor="middle" dominant-baseline="central" font-size="11" class="tm">仅 SSH 隧道访问</text>
+
+        <line x1="230" y1="248" x2="230" y2="264" class="lm" marker-end="url(#m3)"/>
+        <line x1="330" y1="248" x2="330" y2="264" class="lm" marker-end="url(#m3)"/>
+        <line x1="430" y1="248" x2="430" y2="264" class="lm" marker-end="url(#m3)"/>
+
+        <rect x="168" y="264" width="124" height="18" rx="5" class="bs"/>
+        <text x="230" y="273" text-anchor="middle" dominant-baseline="central" font-size="11" class="tm" font-family="monospace">127.0.0.1:8080</text>
+        <rect x="302" y="264" width="56" height="18" rx="5" class="bs"/>
+        <text x="330" y="273" text-anchor="middle" dominant-baseline="central" font-size="11" class="tm">Docker</text>
+        <rect x="368" y="264" width="124" height="18" rx="5" class="bs"/>
+        <text x="430" y="273" text-anchor="middle" dominant-baseline="central" font-size="11" class="tm" font-family="monospace">192.168.1.10:5000</text>
+      </svg>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--accent)"></i> Cloudflare / Caddy 层</span>
+        <span><i class="sw" style="background:var(--green)"></i> 证书链路（DNS-01）</span>
+        <span><i class="sw" style="background:var(--bg-inset);border:1px solid var(--border)"></i> VPS 内部</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <h2><span class="num">02</span>能做什么</h2>
+    <p class="lead">六个特性，每个都对应一件原本要手动干的活。</p>
+
+    <div class="grid">
+      <div class="card">
+        <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1l6 3v4c0 3.5-2.4 6.3-6 7-3.6-.7-6-3.5-6-7V4l6-3zm3 5.5L6.5 11 4 8.5l1-1 1.5 1.5L10 5.5l1 1z"/></svg>自动 HTTPS</h3>
+        <p>证书由 Caddy 自己向 Let's Encrypt 申请，到期前自动续，没有 certbot，没有 crontab。</p>
+      </div>
+      <div class="card">
+        <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm0 1.5a6.5 6.5 0 016.5 6.5A6.5 6.5 0 018 14.5 6.5 6.5 0 011.5 8 6.5 6.5 0 018 1.5zm0 2a4.5 4.5 0 00-4.5 4.5c0 1 .3 1.9.9 2.6L8 6.5V3.5z"/></svg>DNS 自动建/删</h3>
+        <p>加站点时立即调 Cloudflare API 建记录；删站点连带删干净，不留孤儿记录。</p>
+      </div>
+      <div class="card">
+        <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h12v2H2V2zm0 5h8v2H2V7zm0 5h12v2H2v-2z"/></svg>IP 漂移自愈</h3>
+        <p>VPS 换公网 IP 后 A 记录自动更正，另有每日巡检兜底比对。</p>
+      </div>
+      <div class="card">
+        <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 2a5 5 0 110 10A5 5 0 018 3zm0 2a3 3 0 000 6 3 3 0 000-6z"/></svg>泛域名证书</h3>
+        <p>一张 <code>*.example.com</code> 管所有子域，以后加子域不用重新申请。</p>
+      </div>
+      <div class="card">
+        <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M1 5l7-4 7 4v6l-7 4-7-4V5zm7 1.8L3.4 3.9 8 1.4l4.6 2.5L8 6.8zm-5 2.4l4 2.2V13L3 10.2zm10 0L9 13V11.4l4-2.2z"/></svg>上游不限形态</h3>
+        <p>本机端口、局域网另一台机器、Docker compose 服务名，都能当上游。</p>
+      </div>
+      <div class="card">
+        <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M14 2H2a1 1 0 00-1 1v8a1 1 0 001 1h12a1 1 0 001-1V3a1 1 0 00-1-1zM2 3h12v6H2V3zm3 9h6v1H5v-1z"/></svg>Web 管理面板</h3>
+        <p>纯标准库后端 + 单文件前端，站点增删、证书到期、DNS 状态一屏可见。</p>
+      </div>
+      <div class="card warn">
+        <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1l7 13H1L8 1zm0 3.5L3.5 12.5h9L8 4.5zM7 7h2v3H7V7zm0 4h2v1.5H7V11z"/></svg>面板默认本地监听</h3>
+        <p>面板只听 <code>127.0.0.1:8848</code>，<b>请务必不要改成 0.0.0.0</b> —— 它能增删站点还能读 Token。</p>
+      </div>
+      <div class="card warn">
+        <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm3.5 5.5l-5 6h4v1.5h-6v-1.5l5-6H5.5V4h6v1.5z"/></svg>SSH 端口自动放行</h3>
+        <p>改过 SSH 端口也不怕，安装脚本先推断真实端口再配防火墙 —— 这个坑会真的把你锁在门外。</p>
+      </div>
+      <div class="card">
+        <h3><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1h5l3 3v11H4V1zm5 1.5V4h1.5L9 2.5zM6 7v2h4V7H6zm0 3v1.5h4V10H6z"/></svg>幂等可重跑</h3>
+        <p>所有脚本重复执行都不产生副作用，配置注入前先 <code>grep</code> 判断。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap">
+    <h2><span class="num">03</span>为什么不直接用现成项目</h2>
+    <p class="lead">生态里 Traefik 64.3k★、Caddy 引擎 74.6k★、nginx-proxy-manager 34.1k★ 都很成熟。但把它们源码过一遍会发现：<b>没有任何一个原生做到「自动建 Cloudflare DNS 记录 + 反代 + 自动续签」一条龙</b> —— DNS 那一步都得自己补。</p>
+
+    <div class="scroll">
+    <table>
+      <thead><tr><th>项目</th><th>star</th><th>自动建 CF DNS</th><th>自动证书</th><th>是否绑 Docker</th></tr></thead>
+      <tbody>
+        <tr><td>caddyserver/caddy</td><td>74.6k</td><td>需 dynamic_dns 插件</td><td>是</td><td>否</td></tr>
+        <tr><td>traefik/traefik</td><td>64.3k</td><td>否</td><td>是</td><td>强绑定</td></tr>
+        <tr><td>jc21/nginx-proxy-manager</td><td>34.1k</td><td>否</td><td>是</td><td>强绑定</td></tr>
+        <tr><td>caddy-docker-proxy</td><td>4.6k</td><td>否</td><td>是</td><td>强绑定</td></tr>
+        <tr><td><b>本项目</b></td><td>—</td><td><b>是（API 直接调用 + 幂等）</b></td><td>是</td><td><b>否</b></td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="note">如果你的服务<b>全部</b>跑在 Docker 里、而且加得很频繁，老实说直接用 caddy-docker-proxy 更好，别在这套脚本上浪费时间。这套方案的价值在于「项目是散的」。</p>
+  </div>
+</section>
+
+<section id="files">
+  <div class="wrap">
+    <h2><span class="num">04</span>文件清单</h2>
+    <p class="lead">九个文件，职责单一，可以按需要挑着用。</p>
+    <div class="scroll">
+    <table>
+      <thead><tr><th>文件</th><th>在哪执行</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td><code>deploy.sh</code></td><td>你的电脑</td><td>预检 + 上传 + 远程安装，一条命令装完整个栈</td></tr>
+        <tr><td><code>setup.sh</code></td><td>服务器</td><td>装依赖、防火墙、Token、脚本、cron、面板</td></tr>
+        <tr><td><code>enable-cf-native.sh</code></td><td>服务器</td><td>打开 Caddy 原生 CF 集成（DNS-01 + dynamic_dns）</td></tr>
+        <tr><td><code>cf.sh</code></td><td>服务器</td><td>Cloudflare API 封装，可被 source 也可单独调试</td></tr>
+        <tr><td><code>add-site.sh</code></td><td>服务器</td><td>加/删站点：DNS + 配置 + 证书，一行搞定</td></tr>
+        <tr><td><code>sync-dns.sh</code></td><td>服务器</td><td>每日巡检：IP 漂移、记录对齐、证书到期预警</td></tr>
+        <tr><td><code>admin-api.py</code></td><td>服务器</td><td>面板后端，纯标准库，默认听 127.0.0.1:8848</td></tr>
+        <tr><td><code>admin-ui.html</code></td><td>浏览器</td><td>面板前端，单文件，无构建</td></tr>
+        <tr><td><code>Caddyfile</code></td><td>服务器</td><td>主配置，站点配置靠 <code>import</code> 加载</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+</section>
+
+<section id="checklist">
+  <div class="wrap">
+    <h2><span class="num">05</span>上线前请确认</h2>
+    <p class="lead">这些都是「出了事才发现没做」的项。</p>
+    <div class="grid">
+      <div class="card warn">
+        <h3>云服务器安全组</h3>
+        <ul class="checks">
+          <li><b>控制台里也要放行 443</b>，只配系统防火墙没用</li>
+          <li>80 端口跑 DNS-01 后可直接关闭</li>
+          <li>8848 <b>永远不要</b>对公网放行</li>
+        </ul>
+      </div>
+      <div class="card warn">
+        <h3>SSH 与身份</h3>
+        <ul class="checks">
+          <li>改默认端口，<code>PermitRootLogin prohibit-password</code></li>
+          <li>禁用密码登录，只用密钥</li>
+          <li>确认 <code>ufw status</code> 里有你的 SSH 端口</li>
+        </ul>
+      </div>
+      <div class="card warn">
+        <h3>管理后台别裸奔</h3>
+        <ul class="checks">
+          <li>Portainer / NAS 后台不要直接挂公网</li>
+          <li>走 Tailscale，或给站点加 basicauth</li>
+          <li>定期 <code>tar czf /root/caddy-backup.tar.gz /etc/caddy</code></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="num">06</span>命令速查</h2>
+    <div class="term">
+      <div class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="term-tab on" data-p="c1">日常</span>
+        <span class="term-tab" data-p="c2">排错</span>
+        <button class="copy" id="copybtn2">复制</button>
+      </div>
+      <div class="pane on" id="c1"><pre>add-site.sh app.example.com 127.0.0.1:8080   <span class="c"># 加站点</span>
+add-site.sh -r app.example.com               <span class="c"># 删站点 + 删 DNS 记录</span>
+add-site.sh example.com 127.0.0.1:8080 -d    <span class="c"># 强制 DNS-01</span>
+sync-dns.sh --check                          <span class="c"># 只看报告不动手</span>
+
+bash /usr/local/lib/caddy/cf.sh check        <span class="c"># Token 连通性</span>
+bash /usr/local/lib/caddy/cf.sh ip           <span class="c"># 本机公网 IP</span>
+bash /usr/local/lib/caddy/cf.sh resolve app.example.com</pre></div>
+      <div class="pane" id="c2"><pre>journalctl -u caddy -n 50 --no-pager          <span class="c"># Caddy 日志</span>
+journalctl -u admin-api -n 50 --no-pager     <span class="c"># 面板日志</span>
+caddy validate --config /etc/caddy/Caddyfile <span class="c"># 配置校验</span>
+caddy list-modules | grep -E 'cloudflare|dynamic_dns'
+systemctl status caddy admin-api --no-pager</pre></div>
+    </div>
+    <p class="note">注意：开启 Cloudflare 橙色云代理后，浏览器看到的是 Cloudflare 的证书而不是 Let's Encrypt 的 —— 这是正常的，不是配错了。</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="cols">
+      <div>
+        <h4>项目</h4>
+        <ul>
+          <li><a href="https://github.com/easun1874/domain-autopilot">源码仓库</a></li>
+          <li><a href="https://github.com/easun1874/domain-autopilot/issues">提交 Issue</a></li>
+          <li><a href="README.md">完整文档</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>上游依赖</h4>
+        <ul>
+          <li><a href="https://github.com/caddyserver/caddy">caddyserver/caddy</a></li>
+          <li><a href="https://github.com/caddy-dns/cloudflare">caddy-dns/cloudflare</a></li>
+          <li><a href="https://github.com/mholt/caddy-dynamicdns">mholt/caddy-dynamicdns</a></li>
+          <li><a href="https://github.com/libdns/cloudflare">libdns/cloudflare</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>许可</h4>
+        <ul>
+          <li>本项目 MIT</li>
+          <li>Caddy 系组件 Apache-2.0</li>
+          <li>本仓库不含上游代码副本</li>
+        </ul>
+      </div>
+    </div>
+    <p style="margin-top:28px;padding-top:20px;border-top:1px solid var(--border-soft)">domain-autopilot — 把「配 DNS、签证书、配反代、忘记续签」这四件事一次性做完。</p>
+  </div>
+</footer>
+
+<script>
+document.querySelectorAll('.term').forEach(function(term){
+  var tabs = term.querySelectorAll('.term-tab');
+  tabs.forEach(function(t){
+    t.addEventListener('click', function(){
+      tabs.forEach(function(x){ x.classList.remove('on'); });
+      term.querySelectorAll('.pane').forEach(function(p){ p.classList.remove('on'); });
+      t.classList.add('on');
+      var pane = term.querySelector('#' + t.dataset.p);
+      if (pane) pane.classList.add('on');
+    });
+  });
+});
+function bindCopy(btnId){
+  var btn = document.getElementById(btnId);
+  if (!btn) return;
+  btn.addEventListener('click', function(){
+    var term = btn.closest('.term');
+    var pane = term.querySelector('.pane.on');
+    var text = pane ? pane.innerText : '';
+    navigator.clipboard.writeText(text).then(function(){
+      var old = btn.textContent;
+      btn.textContent = '已复制';
+      setTimeout(function(){ btn.textContent = old; }, 1400);
+    });
+  });
+}
+bindCopy('copybtn');
+bindCopy('copybtn2');
+</script>
+
+</body>
+</html>

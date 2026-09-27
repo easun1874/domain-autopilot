@@ -1,0 +1,14 @@
+# 脚本必须是 LF。Git for Windows 默认 core.autocrlf=true，
+# 取出时会把行尾改成 CRLF，传到 Linux 上会报 bad interpreter / ^M 语法错误。
+# 这里强制所有文本文件以 LF 检出。
+
+* text=auto eol=lf
+
+*.sh      text eol=lf
+*.py      text eol=lf
+*.html    text eol=lf
+*.service text eol=lf
+*.yml     text eol=lf
+*.md      text eol=lf
+Caddyfile text eol=lf
+LICENSE   text eol=lf

@@ -1,0 +1,24 @@
+[Unit]
+Description=Caddy + Cloudflare Admin Panel (local only)
+Documentation=file:/usr/local/lib/caddy/README.md
+After=network-online.target caddy.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/lib/caddy
+# cf.env 是 KEY=value 格式，Caddy 与 cf.sh 共用同一个文件；- 前缀表示文件缺失也不报错
+EnvironmentFile=-/etc/caddy/cf.env
+ExecStart=/usr/bin/python3 /usr/local/lib/caddy/admin-api.py --host 127.0.0.1 --port 8848
+Restart=on-failure
+RestartSec=5
+
+# 面板只监听 127.0.0.1，靠 SSH 隧道访问。安全加固：
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/etc/caddy /var/cache/caddy
+
+[Install]
+WantedBy=multi-user.target

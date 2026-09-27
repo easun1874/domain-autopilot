@@ -1,0 +1,11 @@
+{
+	email your-email@example.com
+}
+
+# 兜底站点：匹配不到其他域名的请求都进这里
+:80 {
+	respond "OK" 200
+}
+
+# 每个站点一个独立文件，互不干扰。add-site.sh 生成的配置就落在这里
+import /etc/caddy/sites/*.conf
