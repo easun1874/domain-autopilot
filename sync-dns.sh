@@ -59,13 +59,34 @@ readonly_write() {
 }
 
 # ---------- 1. 源站 IP 漂移检测 ----------
-# cf_public_ip 依赖外部服务；全挂时退回到本机出口网卡的地址（NAT 后可能是内网 IP，
-# 标记为"不确定"，但仍然比"检测不到"有用——至少能触发人工检查）
+# 只认公网 IPv4。云主机的公网 IP 通常不在网卡上（边缘网关做 1:1 NAT），
+# 所以 `ip route get` 只能拿到 10.x 私网地址。若把它当成"新公网 IP"，下面就会
+# 把所有站点的 A 记录改成这个私网地址 —— 外网直接不可达，而且下次巡检会把
+# .last_ip 也写成它，之后再也发现不了。宁可判定"取不到"（后面的分支会跳过写记录）。
+is_public_ipv4() {
+	local ip="${1:-}"
+	printf '%s' "$ip" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+	case "$ip" in
+		10.* | 127.* | 192.168.* | 169.254.* | 0.* | 255.*) return 1 ;;
+		172.1[6-9].* | 172.2[0-9].* | 172.3[01].*) return 1 ;;
+	esac
+	return 0
+}
+
 CUR_IP="$(cf_public_ip 2>/dev/null)"
-[ -z "$CUR_IP" ] && CUR_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}')"
+is_public_ipv4 "$CUR_IP" || CUR_IP=""
 
 if [ -z "$CUR_IP" ]; then
-	warn "取不到公网 IP，跳过漂移检查（检查出网是否正常）"
+	# 外部探测全挂时退回到本机出口地址 —— 只在公网 IP 直接挂在网卡上才有意义，
+	# 所以同样要过一遍公网校验，私网地址一律丢弃
+	CAND="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}')"
+	if is_public_ipv4 "$CAND"; then
+		CUR_IP="$CAND"
+	fi
+fi
+
+if [ -z "$CUR_IP" ]; then
+	warn "取不到可信的公网 IP，跳过漂移检查（检查出网是否正常）"
 	DRIFTED=1   # 未知状态，按"需要检查"处理，但不误报为漂移
 else
 	LAST_IP=""
@@ -157,12 +178,33 @@ if [ "$CHECK_ONLY" -eq 0 ] && [ "$DRIFTED" -eq 1 ] && [ -n "$CUR_IP" ]; then
 fi
 
 # ---------- 3. 证书到期预警 ----------
-CERT_DIR="${CADDY_DATA_DIRECTORY:-/var/lib/caddy}"
-if [ ! -d "$CERT_DIR/acme-v02.api.letsencrypt.org-directory" ]; then
-	for d in /root/.local/share/caddy /caddy_data; do
-		if [ -d "$d/acme-v02.api.letsencrypt.org-directory" ]; then CERT_DIR="$d"; break; fi
-	done
+# Caddy 的 DataDir 是 <HOME>/.local/share/caddy —— **不是 HOME 本身**（systemd 单元里
+# Caddy 的 HOME=/var/lib/caddy，所以数据在 /var/lib/caddy/.local/share/caddy）。
+# 证书实际在 DataDir 下的 certificates/<issuer>/<域名>/ ，很容易把 certificates
+# 这一层漏掉 —— 那样这段预警会静默失效，只留一句"未找到证书目录"，非常隐蔽。
+# 路径与面板 admin-api.py 的 CERT_BASES 保持一致，别两套标准。
+CERT_CANDIDATES=()
+if [ -n "${CADDY_DATA_DIRECTORY:-}" ]; then
+	CERT_CANDIDATES+=("$CADDY_DATA_DIRECTORY/certificates" "$CADDY_DATA_DIRECTORY")
 fi
+CERT_CANDIDATES+=(
+	/var/lib/caddy/.local/share/caddy/certificates
+	/root/.local/share/caddy/certificates
+	/var/lib/caddy/certificates
+	/caddy_data/certificates
+	/root/.local/share/caddy
+	/var/lib/caddy
+	/caddy_data
+)
+CERT_DIR=""
+for d in "${CERT_CANDIDATES[@]}"; do
+	[ -n "$d" ] || continue
+	if [ -d "$d/acme-v02.api.letsencrypt.org-directory" ]; then
+		CERT_DIR="$d"
+		break
+	fi
+done
+[ -n "$CERT_DIR" ] || CERT_DIR="/var/lib/caddy/.local/share/caddy/certificates"
 
 if [ -d "$CERT_DIR/acme-v02.api.letsencrypt.org-directory" ]; then
 	FOUND_CERT=0
