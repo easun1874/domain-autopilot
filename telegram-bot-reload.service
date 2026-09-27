@@ -1,0 +1,18 @@
+[Unit]
+Description=Restart the Telegram bot after telegram.env changed
+Documentation=file:/usr/local/lib/caddy/README.md
+
+[Service]
+Type=oneshot
+# 先 enable 再 restart。
+#
+# 为什么 enable 放在这里、而不是安装时就做好：没配 Token 时启动机器人会直接退出，
+# 而单元是 Restart=always —— 预先 enable 就等于给还没配置的机器埋一个开机 crash loop。
+# 等到这个单元被触发，说明 telegram.env 已经写好了（有 Token），那时候才该让它开机自启。
+#
+# restart 而不是 start：unit 已经 active 时 start 是空操作，换 Token 就不会生效。
+# 反过来说，unit 没在跑时 restart 会把它拉起来 —— 面板首次配置正是靠这一步。
+# 前置的 - 表示失败也返回成功：万一 telegram-bot.service 还没装（只装了面板、
+# 没装机器人），不该让这个单元变成 failed 状态刷日志。
+ExecStart=-/usr/bin/systemctl enable telegram-bot.service
+ExecStart=-/usr/bin/systemctl restart telegram-bot.service

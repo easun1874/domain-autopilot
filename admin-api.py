@@ -14,8 +14,10 @@ import os
 import re
 import subprocess
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 VERSION = "1.0"
@@ -29,6 +31,12 @@ UI_FILE = os.path.join(HERE, "admin-ui.html")
 MOCK = os.environ.get("CADDY_ADMIN_MOCK", "0") == "1"
 
 CF_API = "https://api.cloudflare.com/client/v4"
+
+TG_API = "https://api.telegram.org"
+TG_ENV = os.environ.get("TELEGRAM_ENV", "/etc/caddy/telegram.env")
+TG_SERVICE = "telegram-bot"
+TG_RELOAD_PATH = "/etc/systemd/system/telegram-bot-reload.path"
+TG_BOT_FILE = os.environ.get("TG_BOT_FILE", "/usr/local/lib/caddy/telegram-bot.py")
 
 # ---------------- 工具 ----------------
 
@@ -289,6 +297,197 @@ def get_dns(domains):
     return out
 
 
+# ---------------- Telegram 机器人 ----------------
+#
+# 面板只负责"把 Token 和白名单写进 /etc/caddy/telegram.env"，不碰 systemd：
+# admin-api.service 是 ProtectSystem=strict，只放开 /etc/caddy 可写。
+# 让服务读到新配置这件事交给 telegram-bot-reload.path —— 它盯着 env 文件，
+# 一变就 restart telegram-bot，由 systemd 自己以 root 执行。
+# 好处是不用给面板加 /etc/systemd/system 写权限、也不用给它开放 D-Bus，
+# 顺带还让你手工编辑 env 文件时也能自动生效。
+
+RE_ID_LIST = re.compile(r"^\d+(\s*,\s*\d+)*$")
+RE_TG_TOKEN = re.compile(r"^\d+:[A-Za-z0-9_-]{30,}$")
+
+# 演示模式下的机器人配置（在内存里，写进去再读回来，--mock 能看到完整流程）
+MOCK_TG = {"token": "123456789:AAE-demo-token-not-real", "allowed": ["100000001"]}
+
+
+def tg_call(token, method, params=None, timeout=15):
+    """调 Telegram Bot API。Token 只留在这次请求的内存里：
+    不进 argv（会出现在 ps 里）、不进日志、不回给前端。"""
+    if not token:
+        return {"ok": False, "description": "缺少 Token"}
+    req = Request("%s/bot%s/%s" % (TG_API, token, method),
+                  data=urlencode(params or {}).encode("utf-8"))
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+    except HTTPError as exc:
+        # Telegram 的 401/400 也是 JSON body，读出来才有可读的错误原因
+        try:
+            return json.loads(exc.read().decode("utf-8", "replace"))
+        except Exception:  # noqa: BLE001
+            return {"ok": False, "description": "HTTP %s" % exc.code}
+    except (URLError, json.JSONDecodeError, OSError) as exc:
+        return {"ok": False, "description": str(exc)}
+
+
+def tg_read_env():
+    token, allowed = "", ""
+    if os.path.isfile(TG_ENV):
+        try:
+            with open(TG_ENV, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if line.startswith("TELEGRAM_BOT_TOKEN="):
+                        token = line.split("=", 1)[1].strip()
+                    elif line.startswith("TELEGRAM_ALLOWED_IDS="):
+                        allowed = line.split("=", 1)[1].strip()
+        except OSError:
+            pass
+    return token, allowed
+
+
+def tg_state(with_username=True):
+    if MOCK:
+        tok = MOCK_TG.get("token") or ""
+        return {
+            "configured": bool(tok), "tokenHint": (tok[:8] + "…（已隐藏）") if tok else "",
+            "allowedIds": list(MOCK_TG.get("allowed") or []), "service": "active",
+            "pathUnit": True, "botFile": True, "username": "demo_sites_bot",
+        }
+    token, allowed = tg_read_env()
+    _, svc, _ = sh("systemctl is-active " + TG_SERVICE)
+    username = ""
+    if token and with_username:
+        me = tg_call(token, "getMe", timeout=10)
+        if me.get("ok"):
+            username = (me.get("result") or {}).get("username", "")
+    return {
+        "configured": bool(token),
+        # 只露前 8 位，和 telegram-bot-setup.sh --status 一个口径
+        "tokenHint": (token[:8] + "…（已隐藏）") if token else "",
+        "allowedIds": [x for x in re.split(r"\s*,\s*", allowed) if x],
+        "service": svc or "unknown",
+        "pathUnit": os.path.isfile(TG_RELOAD_PATH),
+        "botFile": os.path.isfile(TG_BOT_FILE),
+        "username": username,
+    }
+
+
+def tg_verify(payload):
+    token = (payload.get("token") or "").strip()
+    if not token:
+        return {"ok": False, "bad_request": True, "error": "先填 Token"}
+    if not RE_TG_TOKEN.match(token):
+        return {"ok": False, "bad_request": True,
+                "error": "Token 格式不对。形如 123456789:AAE-xxxxxxxx，"
+                         "数字、冒号、然后一长串字符——整段都要复制"}
+    if MOCK:
+        return {"ok": True, "username": "demo_sites_bot", "name": "Demo", "id": 100000001}
+    r = tg_call(token, "getMe", timeout=15)
+    if not r.get("ok"):
+        return {"ok": False, "bad_request": True,
+                "error": "Token 无效：" + str(r.get("description") or "未知错误")}
+    res = r.get("result") or {}
+    return {"ok": True, "username": res.get("username", ""),
+            "name": res.get("first_name", ""), "id": res.get("id")}
+
+
+def tg_pair(payload):
+    """调 getUpdates 探测"谁给机器人发过消息"。
+    不带 offset 调用不会确认消息，所以不影响机器人自己启动时吃掉积压。"""
+    token = (payload.get("token") or "").strip() or tg_read_env()[0]
+    if not token:
+        return {"ok": False, "bad_request": True, "error": "先填 Token"}
+    if MOCK:
+        return {"ok": True, "serviceRunning": True, "candidates": [
+            {"id": "100000002", "username": "demo_user", "name": "Demo User", "text": "/start"},
+        ]}
+    try:
+        wait = int(payload.get("wait") or 12)
+    except (TypeError, ValueError):
+        wait = 12
+    deadline = time.time() + max(0, min(wait, 25))
+
+    found = {}
+    while True:
+        r = tg_call(token, "getUpdates", {"timeout": 5, "limit": 100}, timeout=20)
+        if not r.get("ok"):
+            return {"ok": False, "error": "Telegram 返回错误：" + str(r.get("description") or "")}
+        for upd in (r.get("result") or []):
+            msg = upd.get("message") or upd.get("edited_message") or {}
+            who = msg.get("from") or {}
+            uid = who.get("id")
+            if not uid:
+                continue
+            seen = found.setdefault(str(uid), {
+                "id": str(uid),
+                "username": who.get("username") or "",
+                "name": " ".join(x for x in [who.get("first_name"), who.get("last_name")] if x),
+                "text": (msg.get("text") or "")[:40],
+            })
+            seen["text"] = seen["text"] or (msg.get("text") or "")[:40]
+        if found or time.time() >= deadline:
+            break
+    return {"ok": True, "candidates": list(found.values()),
+            "serviceRunning": sh("systemctl is-active " + TG_SERVICE)[1] == "active"}
+
+
+def tg_apply(payload):
+    token = (payload.get("token") or "").strip()
+    if not token:
+        token = tg_read_env()[0]
+        if not token:
+            return {"ok": False, "bad_request": True, "error": "还没有 Token，先填一个"}
+    elif not RE_TG_TOKEN.match(token):
+        return {"ok": False, "bad_request": True, "error": "Token 格式不对"}
+
+    raw = payload.get("allowedIds")
+    if raw is None:
+        allowed = tg_read_env()[1]
+    elif isinstance(raw, list):
+        allowed = ",".join(str(x).strip() for x in raw if str(x).strip())
+    else:
+        allowed = str(raw).strip()
+    allowed = re.sub(r"\s+", "", allowed)
+    if allowed and not RE_ID_LIST.match(allowed):
+        return {"ok": False, "bad_request": True,
+                "error": "授权用户 ID 只能是数字，多个用英文逗号分隔"}
+
+    if MOCK:
+        MOCK_TG["token"] = token
+        MOCK_TG["allowed"] = [x for x in allowed.split(",") if x]
+        return {"ok": True, "output": "[演示模式] 已模拟写入 %s" % TG_ENV, "state": tg_state()}
+
+    if not os.path.isdir(os.path.dirname(TG_ENV)):
+        return {"ok": False, "error": "目录 %s 不存在（先跑 setup.sh）" % os.path.dirname(TG_ENV)}
+
+    try:
+        # 直接用 O_CREAT|O_TRUNC 打开并给 0o600：模式只在创建时生效，所以补一次 chmod。
+        # 不用"写临时文件再 rename"是因为临时文件的创建也会惊动 path 单元，
+        # 白白多触发一次重启；而 systemd 的 PathChanged 是在 close 后才触发，直接写安全。
+        fd = os.open(TG_ENV, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_ALLOWED_IDS=%s\n" % (token, allowed))
+        os.chmod(TG_ENV, 0o600)
+    except OSError as exc:
+        return {"ok": False, "error": "写 %s 失败：%s" % (TG_ENV, exc)}
+
+    # 等 path 单元把服务拉起来（systemd 对 path 触发有约 100ms 节流 + 服务自身启动时间）
+    time.sleep(3)
+    state = tg_state()
+    out = ["已写入 %s（600）" % TG_ENV]
+    if not state["pathUnit"]:
+        out.append("⚠ 没装 telegram-bot-reload.path，服务不会自动重启。"
+                   "在 VPS 上跑一次 domain-autopilot-update，或手动 systemctl restart telegram-bot")
+    elif state["service"] != "active":
+        out.append("服务当前 %s。若不是 active，看 journalctl -u telegram-bot -n 30" % state["service"])
+    else:
+        out.append("服务已在运行，配置生效")
+    return {"ok": True, "output": "\n".join(out), "state": state}
+
+
 # ---------------- HTTP ----------------
 
 
@@ -350,6 +549,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/dns":
             domains = [s["domain"] for s in list_sites()]
             return self._json({"records": get_dns(domains)})
+        if path == "/api/telegram":
+            return self._json(tg_state())
         if path == "/api/config":
             try:
                 with open(CADDYFILE, encoding="utf-8", errors="replace") as fh:
@@ -370,6 +571,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/refresh":
             rc, out, err = sh("sync-dns.sh --check", timeout=120)
             return self._json({"ok": rc == 0, "output": out, "error": err})
+        if path in ("/api/telegram/verify", "/api/telegram/pair", "/api/telegram/apply"):
+            fn = {"/api/telegram/verify": tg_verify,
+                  "/api/telegram/pair": tg_pair,
+                  "/api/telegram/apply": tg_apply}[path]
+            res = fn(body)
+            code = 200 if res.get("ok") else (400 if res.get("bad_request") else 500)
+            return self._json(res, code)
         return self._json({"ok": False, "error": "not found"}, 404)
 
     def do_DELETE(self):

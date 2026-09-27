@@ -104,8 +104,12 @@ done
 for f in add-site.sh sync-dns.sh enable-cf-native.sh; do
 	install -m 755 "$INSTALL_DIR/$f" "/usr/local/bin/$f"
 done
-[ -f "$INSTALL_DIR/update.sh" ] && install -m 755 "$INSTALL_DIR/update.sh" /usr/local/bin/domain-autopilot-update
-[ -f "$INSTALL_DIR/telegram-bot-setup.sh" ] && install -m 755 "$INSTALL_DIR/telegram-bot-setup.sh" /usr/local/lib/caddy/telegram-bot-setup.sh
+if [ -f "$INSTALL_DIR/update.sh" ]; then
+	install -m 755 "$INSTALL_DIR/update.sh" /usr/local/bin/domain-autopilot-update
+fi
+if [ -f "$INSTALL_DIR/telegram-bot-setup.sh" ]; then
+	install -m 755 "$INSTALL_DIR/telegram-bot-setup.sh" /usr/local/lib/caddy/telegram-bot-setup.sh
+fi
 log "cf.sh / add-site.sh / sync-dns.sh / enable-cf-native.sh 已刷新"
 
 echo "== 3/4 重装面板与 Telegram 机器人 =="
@@ -119,17 +123,30 @@ if [ -f "$INSTALL_DIR/admin-api.py" ]; then
 	log "面板已刷新并重启"
 fi
 
-# 机器人只在装过的机器上刷新 —— 没装的机器别凭空多出一个服务
+# 机器人相关文件分两层对待：
+#   程序和 reload 单元 —— 面板要靠它们才能在网页里配机器人，无条件同步
+#   机器人本体         —— 只在启用了的机器上重启，别把没用的服务拉到别人机器上跑
 if [ -f "$INSTALL_DIR/telegram-bot.py" ]; then
 	install -m 755 "$INSTALL_DIR/telegram-bot.py" /usr/local/lib/caddy/telegram-bot.py
-	if systemctl list-unit-files 2>/dev/null | grep -q '^telegram-bot\.service'; then
-		[ -f "$INSTALL_DIR/telegram-bot.service" ] \
-			&& install -m 644 "$INSTALL_DIR/telegram-bot.service" /etc/systemd/system/telegram-bot.service
+	if [ -d /run/systemd/system ]; then
+		for u in telegram-bot.service telegram-bot-reload.path telegram-bot-reload.service; do
+			# 写成 if 而不是 `[ -f ... ] && install`：后者在文件缺失时返回 1，
+			# 在 set -e 下会直接终止整个脚本
+			if [ -f "$INSTALL_DIR/$u" ]; then
+				install -m 644 "$INSTALL_DIR/$u" "/etc/systemd/system/$u"
+			fi
+		done
 		systemctl daemon-reload >/dev/null 2>&1 || true
+		# reload.path 是面板改配置后能自动生效的前提，老机器升级时补上
+		systemctl enable --now telegram-bot-reload.path >/dev/null 2>&1 || true
+	fi
+	# 用 is-enabled 判断"配置过并启用过"，不能用 list-unit-files：
+	# 上面刚把单元文件装了进去，那个判断会永远命中。
+	if systemctl is-enabled telegram-bot.service >/dev/null 2>&1; then
 		systemctl restart telegram-bot >/dev/null 2>&1 || true
 		log "Telegram 机器人已刷新并重启"
 	else
-		info "未安装 Telegram 机器人，跳过。要装：bash /usr/local/lib/caddy/telegram-bot-setup.sh"
+		info "Telegram 机器人未启用。可在面板里填 Token 开启，或 bash /usr/local/lib/caddy/telegram-bot-setup.sh"
 	fi
 fi
 

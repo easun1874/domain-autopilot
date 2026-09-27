@@ -1,0 +1,21 @@
+[Unit]
+Description=Watch telegram.env and reload the Telegram bot when it changes
+Documentation=file:/usr/local/lib/caddy/README.md
+
+[Path]
+# 盯着凭据文件，一变就把机器人拉起来/重启。
+#
+# 存在的意义：管理面板是 ProtectSystem=strict、只放开 /etc/caddy 可写的进程。
+# 让"面板写完配置后服务生效"这件事可行，只有两条路——要么给面板加
+# /etc/systemd/system 写权限和 D-Bus 访问（等于把面板从"改 Caddy 配置"升级成
+# "能改系统服务"，风险明显变大），要么让 systemd 自己来干这件事。
+# 选后者。
+#
+# systemd 对 PathChanged 用的是 close-write / moved-to 事件，所以不会在文件
+# 写一半时就触发；文件还不存在时也照常监视，首次创建同样能唤醒（面板首次
+# 配置就是这条路）。
+PathChanged=/etc/caddy/telegram.env
+Unit=telegram-bot-reload.service
+
+[Install]
+WantedBy=multi-user.target

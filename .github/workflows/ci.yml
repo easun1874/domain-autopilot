@@ -61,7 +61,8 @@ jobs:
           for f in LICENSE README.md Caddyfile admin-api.py admin-ui.html \
                    admin-api.service bootstrap.sh setup.sh deploy.sh update.sh \
                    add-site.sh cf.sh sync-dns.sh enable-cf-native.sh docs/index.html \
-                   telegram-bot.py telegram-bot.service telegram-bot-setup.sh; do
+                   telegram-bot.py telegram-bot.service telegram-bot-setup.sh \
+                   telegram-bot-reload.path telegram-bot-reload.service; do
             if [ -f "$f" ]; then echo "  ok   $f"; else echo "  MISS $f"; missing=1; fi
           done
           [ "$missing" -eq 0 ] || { echo "有文件缺失"; exit 1; }
@@ -92,7 +93,7 @@ jobs:
 
       - name: 接口可用性
         run: |
-          for ep in ping status sites dns certs config; do
+          for ep in ping status sites dns certs config telegram; do
             printf '%-8s' "$ep"
             curl -sf -o /dev/null -w 'HTTP %{http_code}\n' "http://127.0.0.1:8848/api/$ep"
           done
@@ -106,6 +107,34 @@ jobs:
             -d '{"domain":"../etc/passwd","upstream":"127.0.0.1:1"}')
           echo "非法域名返回 $code"
           [ "$code" = "400" ] || { echo "路径穿越没被拦住"; exit 1; }
+
+      - name: Telegram 接口·脏输入必须 400，且不回显 Token
+        run: |
+          # 状态接口先通一遍
+          curl -sf http://127.0.0.1:8848/api/telegram -o /dev/null
+
+          # 这三条都必须停在 400，一步都不许走到写 telegram.env
+          for body in '{"token":"bad"}' \
+                      '{}' \
+                      '{"token":"123456789:AAE-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","allowedIds":"1; rm -rf /"}'; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+              http://127.0.0.1:8848/api/telegram/apply \
+              -H 'Content-Type: application/json' -d "$body")
+            echo "  $body -> HTTP $code"
+            [ "$code" = "400" ] || { echo "脏输入没被拦住"; exit 1; }
+          done
+
+          # 格式合法的假 Token：应 200，且响应里绝不能出现完整 Token
+          tok='123456789:AAE-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+          out=$(curl -s -X POST http://127.0.0.1:8848/api/telegram/apply \
+            -H 'Content-Type: application/json' \
+            -d "{\"token\":\"$tok\",\"allowedIds\":\"100000002\"}")
+          echo "  -> $out"
+          printf '%s' "$out" | grep -q '100000002' || { echo "白名单没被接受"; exit 1; }
+          if printf '%s' "$out" | grep -q "$tok"; then
+            echo "完整 Token 被回显到了响应里"; exit 1
+          fi
+          echo "  Token 未被回显 ✓"
 
       - name: 清理
         if: always()

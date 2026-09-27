@@ -195,7 +195,10 @@ if [ "$INSTALL_PANEL" != "1" ]; then
 else
 	install -m 755 "$SCRIPT_DIR/admin-api.py"    /usr/local/lib/caddy/admin-api.py
 	install -m 644 "$SCRIPT_DIR/admin-ui.html"   /usr/local/lib/caddy/admin-ui.html
-	[ -f "$SCRIPT_DIR/README.md" ] && install -m 644 "$SCRIPT_DIR/README.md" /usr/local/lib/caddy/README.md
+	# if 而不是 `[ -f ] && install`：后者在文件缺失时返回 1，set -e 下会终止脚本
+	if [ -f "$SCRIPT_DIR/README.md" ]; then
+		install -m 644 "$SCRIPT_DIR/README.md" /usr/local/lib/caddy/README.md
+	fi
 	if [ -d /run/systemd/system ]; then
 		install -m 644 "$SCRIPT_DIR/admin-api.service" /etc/systemd/system/admin-api.service
 		systemctl daemon-reload
@@ -207,6 +210,26 @@ else
 		fi
 	else
 		info "非 systemd 环境，手动启动：/usr/bin/python3 /usr/local/lib/caddy/admin-api.py"
+	fi
+
+	# 面板里能直接配机器人，前提是程序和单元先就位：
+	#   telegram-bot.py / telegram-bot.service   —— 面板填好 Token 后由 path 单元拉起来
+	#   telegram-bot-reload.path / .service      —— 盯 telegram.env，一变就重启机器人
+	# 这里只 enable reload.path，绝不 enable/start telegram-bot 本体：
+	# 没 Token 时它启动即退出，配上 Restart=always 就是一个刷日志的开机 crash loop。
+	# enable 交给 reload 单元做——它被触发时说明 Token 已经配好了。
+	if [ -d /run/systemd/system ] \
+		&& [ -f "$SCRIPT_DIR/telegram-bot.py" ] && [ -f "$SCRIPT_DIR/telegram-bot.service" ]; then
+		install -m 755 "$SCRIPT_DIR/telegram-bot.py" /usr/local/lib/caddy/telegram-bot.py
+		install -m 644 "$SCRIPT_DIR/telegram-bot.service" /etc/systemd/system/telegram-bot.service
+		install -m 644 "$SCRIPT_DIR/telegram-bot-reload.path" /etc/systemd/system/telegram-bot-reload.path
+		install -m 644 "$SCRIPT_DIR/telegram-bot-reload.service" /etc/systemd/system/telegram-bot-reload.service
+		systemctl daemon-reload
+		if systemctl enable --now telegram-bot-reload.path >/dev/null 2>&1; then
+			log "机器人程序与自动重载单元已就位（可在面板里直接填 Token 启用）"
+		else
+			info "telegram-bot-reload.path 未启用，面板里改完配置需手动 systemctl restart telegram-bot"
+		fi
 	fi
 fi
 

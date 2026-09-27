@@ -345,8 +345,9 @@ domain-autopilot-update --no-reload # 更新完不重载 Caddy
 | 8 | 打开原生 CF 集成 | `-y` 自动跑 `enable-cf-native.sh`，缺模块则降级 |
 | 9 | 装管理面板 | `admin-api.service` 常驻，监听 127.0.0.1:8848 |
 
-跑完这 9 步，还会**问一句要不要装 Telegram 机器人**（第 16 节）。回车跳过就行，
-不影响前面任何一步；装了的机器人是独立的 `telegram-bot.service`，和面板互不依赖。
+跑完这 9 步，还会**问一句要不要装 Telegram 机器人**（第 16 节）。回车跳过也行——
+第 9 步已经顺手把机器人程序和 `telegram-bot-reload.path` 放好了，之后你随时可以在
+面板里填个 Token 就把它启用。机器人是独立的 `telegram-bot.service`，不装不影响任何其它功能。
 
 ### 3.4 部署后访问面板
 
@@ -674,6 +675,8 @@ journalctl -u caddy -n 50 --no-pager      # 看有没有 CF API 报错
 | `telegram-bot.py` | 【VPS】 | Telegram 机器人，纯标准库长轮询，白名单鉴权。只调 `add-site.sh`，不自己实现逻辑 |
 | `telegram-bot.service` | 机器人的 systemd 单元，凭据走 `/etc/caddy/telegram.env`（600） |
 | `telegram-bot-setup.sh` | 【VPS】 | 装/改机器人：隐藏输入 Token、自动探测你的 Telegram ID、写配置、装单元。可重复跑 |
+| `telegram-bot-reload.path` | 盯 `/etc/caddy/telegram.env`，一变就重启机器人。面板能"保存即生效"靠的就是它 |
+| `telegram-bot-reload.service` | 上面那个 path 单元触发的动作：`enable` + `restart` 机器人 |
 
 ---
 
@@ -746,6 +749,8 @@ python3 admin-api.py --mock     # 演示模式，数据是假的
 - 顶部状态徽章：Caddy 是否运行、CF 模块装没装、Token 有没有
 - 没启用原生集成时，顶部会提示去跑 `enable-cf-native.sh`
 - Caddyfile 实时预览
+- **Telegram 机器人**：填 Token → 验证 → 探测你的用户 ID → 保存并启动，
+  全程不用敲命令（见第 16.2 节 A 方案）
 
 ### 安全设计（重要）
 
@@ -772,6 +777,10 @@ python3 admin-api.py --mock     # 演示模式，数据是假的
 | GET | `/api/certs` | 证书到期列表 |
 | POST | `/api/refresh` | 跑一次 `sync-dns.sh --check` |
 | GET | `/api/config` | 读 Caddyfile |
+| GET | `/api/telegram` | 机器人配置与服务状态 |
+| POST | `/api/telegram/verify` | 用 Token 调 Telegram `getMe` 验证 |
+| POST | `/api/telegram/pair` | 调 `getUpdates` 探测你的 Telegram 用户 ID |
+| POST | `/api/telegram/apply` | 写 `/etc/caddy/telegram.env`（600），Token 不回显、不进日志 |
 
 ---
 
@@ -794,6 +803,25 @@ python3 admin-api.py --mock     # 演示模式，数据是假的
 > 专门新建一个最省事。
 
 ### 16.2 安装
+
+两种方式，效果一样，选一个就行。
+
+**A. 在管理面板里点（不用敲命令）**
+
+打开面板（第 15 节讲了怎么开隧道），右下角有「Telegram 机器人」卡片：
+
+1. 把 BotFather 给的 Token 粘进去 → 点「**验证 Token**」，它会告诉你这个机器人叫什么
+2. 去 Telegram 搜到那个 bot，随便发一句话（`/start` 就行）
+3. 回面板点「**探测我的 ID**」，它自动把你的用户 ID 填进白名单（也可以直接手填）
+4. 点「**保存并启动**」
+
+> 面板做这件事**没有放宽任何权限**。它只往 `/etc/caddy/telegram.env` 写文件，
+> 而面板本来就只能写 `/etc/caddy`（`admin-api.service` 是 `ProtectSystem=strict`）。
+> "让服务读到新配置"这一步交给 `telegram-bot-reload.path`：systemd 盯着那个文件，
+> 一变就重启机器人。附带的好处是你自己手工编辑 `telegram.env` 之后也会自动生效，
+> 不用记得去 `systemctl restart`。
+
+**B. 用命令行**
 
 VPS 上，root：
 
@@ -867,5 +895,6 @@ TELEGRAM_BOT_TOKEN=123456789:AAE-xxx TELEGRAM_ALLOWED_IDS=123456789 \
 | 日志报 `409 Conflict` | 同一个 Token 被两个进程轮询了（多半是和别的机器人共用了一个 bot） |
 | 启动就退出，说 Token 无效 | Token 抄错了；或 VPS 出不了网：`curl -s https://api.telegram.org` |
 | 显示添加成功但网页打不开 | 机器人回报的状态码就是线索：502 = 上游服务没在跑；其它非 2xx 去查上游日志 |
-| 换 Token / 改白名单 | 重跑 `telegram-bot-setup.sh`（幂等），或改 `telegram.env` 后 restart |
+| 换 Token / 改白名单 | 面板里「Telegram 机器人」卡片改完保存即生效；或手改 `telegram.env` —— 装了 `reload.path` 的话也会自动重启，不用手动 restart |
+| 面板保存了但服务没起来 | `systemctl status telegram-bot-reload.path`。没这个单元就跑一次 `domain-autopilot-update` 补上 |
 

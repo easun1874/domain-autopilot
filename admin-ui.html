@@ -69,11 +69,11 @@ tr:last-child td{border-bottom:0}
 .days{font-weight:500}
 .days.ok{color:var(--teal)} .days.warn{color:var(--amber)} .days.bad{color:var(--red)}
 label{display:block; font-size:12px; color:var(--muted); margin:10px 0 4px}
-input[type=text]{
+input[type=text],input[type=password]{
   width:100%; font:inherit; font-size:13px; padding:7px 10px; border-radius:8px;
   border:1px solid var(--line); background:#FFF; color:var(--text);
 }
-input[type=text]:focus{outline:none; border-color:var(--blue)}
+input[type=text]:focus,input[type=password]:focus{outline:none; border-color:var(--blue)}
 .checks{display:flex; flex-direction:column; gap:6px; margin-top:10px}
 .chk{display:flex; align-items:center; gap:7px; font-size:13px; color:var(--text)}
 .chk input{margin:0}
@@ -152,6 +152,29 @@ summary{cursor:pointer; font-size:13px; color:var(--muted)}
       <div class="card">
         <h2>证书到期</h2>
         <div id="certList"></div>
+      </div>
+
+      <div class="card">
+        <h2>Telegram 机器人</h2>
+        <div class="badges" id="tgStatus"></div>
+
+        <label for="fTgToken">Bot Token（Telegram 里找 @BotFather，发 /newbot 拿）</label>
+        <input type="password" id="fTgToken" placeholder="123456789:AAE-xxxxxxxxxxxxxxxx"
+               autocomplete="off" spellcheck="false">
+
+        <label for="fTgIds">授权用户 ID（逗号分隔，留空 = 谁都不能执行动作）</label>
+        <input type="text" id="fTgIds" placeholder="用下面的探测按钮自动填，也可以手填">
+
+        <div class="row">
+          <button id="btnTgVerify">验证 Token</button>
+          <button id="btnTgPair">探测我的 ID</button>
+          <button id="btnTgSave" class="primary">保存并启动</button>
+        </div>
+        <div class="hint">
+          顺序：验证 Token → 去 Telegram 搜到你的 bot 发一句话 → 探测我的 ID → 保存并启动。<br>
+          保存后机器人立刻生效。这台面板不会被放宽任何权限，重启由 systemd 自己完成。
+        </div>
+        <div class="out" id="tgOut"></div>
       </div>
     </div>
   </div>
@@ -277,6 +300,110 @@ function renderCerts(certs) {
   $("certList").innerHTML = html;
 }
 
+// ---------------- Telegram 机器人 ----------------
+
+let tgUsername = "";
+
+function tgShowOut(text, kind) {
+  const el = $("tgOut");
+  el.textContent = text || "";
+  el.className = "out show" + (kind ? " " + kind : "");
+}
+
+function renderTgStatus(st) {
+  const b = [];
+  if (!st.botFile) {
+    b.push('<span class="badge bad">机器人未装</span>');
+  } else if (st.service === "active") {
+    b.push('<span class="badge ok">运行中</span>');
+  } else if (st.configured) {
+    b.push('<span class="badge warn">已配置，未运行</span>');
+  } else {
+    b.push('<span class="badge">未配置</span>');
+  }
+  if (st.username) b.push('<span class="badge">@' + st.username + '</span>');
+  if (st.configured) b.push('<span class="badge">' + st.tokenHint + '</span>');
+  if (st.allowedIds && st.allowedIds.length) {
+    b.push('<span class="badge ok">授权 ' + st.allowedIds.length + ' 人</span>');
+  } else if (st.configured) {
+    b.push('<span class="badge bad">白名单为空</span>');
+  }
+  if (st.configured && !st.pathUnit) {
+    b.push('<span class="badge warn">缺 reload.path</span>');
+  }
+  $("tgStatus").innerHTML = b.join(" ");
+
+  if (st.allowedIds && st.allowedIds.length && !$("fTgIds").value) {
+    $("fTgIds").value = st.allowedIds.join(",");
+  }
+}
+
+async function loadTelegram() {
+  try {
+    const st = await api("/api/telegram");
+    renderTgStatus(st);
+    if (!st.botFile) {
+      tgShowOut("机器人程序还没装到这台机器上。在 VPS 上跑一次 domain-autopilot-update，"
+        + "或直接 bash /usr/local/lib/caddy/telegram-bot-setup.sh。", "err");
+    }
+  } catch (e) {
+    $("tgStatus").innerHTML = '<span class="badge bad">读不到状态</span>';
+  }
+}
+
+$("btnTgVerify").onclick = async () => {
+  const t = $("fTgToken").value.trim();
+  if (!t) { tgShowOut("先填 Token", "err"); return; }
+  $("btnTgVerify").disabled = true;
+  tgShowOut("校验中…");
+  const r = await api("/api/telegram/verify", {
+    method: "POST", body: JSON.stringify({token: t})
+  });
+  $("btnTgVerify").disabled = false;
+  if (!r.ok) { tgShowOut(r.error || JSON.stringify(r), "err"); return; }
+  tgUsername = r.username || "";
+  tgShowOut("Token 有效：@" + tgUsername
+    + "\n\n下一步：在 Telegram 里搜 @" + tgUsername + " 打开它，随便发一句话（/start 就行），"
+    + "然后点「探测我的 ID」。", "ok");
+};
+
+$("btnTgPair").onclick = async () => {
+  const t = $("fTgToken").value.trim();
+  $("btnTgPair").disabled = true;
+  tgShowOut("等待 12 秒…现在就切到 Telegram 给机器人发一句话");
+  const r = await api("/api/telegram/pair", {
+    method: "POST", body: JSON.stringify({token: t, wait: 12})
+  });
+  $("btnTgPair").disabled = false;
+  if (!r.ok) { tgShowOut(r.error || JSON.stringify(r), "err"); return; }
+  const c = r.candidates || [];
+  if (!c.length) {
+    tgShowOut("这 12 秒里没收到消息。确认你已经给机器人发过话，然后再点一次。"
+      + (r.serviceRunning
+          ? "\n注意：机器人服务正在运行，消息可能被它取走了 —— 这种情况下直接手填你的 ID 更快。"
+          : ""), "err");
+    return;
+  }
+  $("fTgIds").value = c.map(x => x.id).join(",");
+  tgShowOut("探测到 " + c.length + " 个："
+    + c.map(x => (x.username ? "@" + x.username : (x.name || "未知")) + " " + x.id).join("；")
+    + "\n已填进上面的框。确认没问题就点「保存并启动」。", "ok");
+};
+
+$("btnTgSave").onclick = async () => {
+  const t = $("fTgToken").value.trim();
+  const ids = $("fTgIds").value.trim();
+  $("btnTgSave").disabled = true;
+  tgShowOut("写入中…");
+  const r = await api("/api/telegram/apply", {
+    method: "POST", body: JSON.stringify({token: t, allowedIds: ids})
+  });
+  $("btnTgSave").disabled = false;
+  tgShowOut(r.output || r.error || JSON.stringify(r), r.ok ? "ok" : "err");
+  if (r.ok) $("fTgToken").value = "";
+  if (r.state) renderTgStatus(r.state);
+};
+
 async function loadAll() {
   $("btnRefresh").disabled = true;
   try {
@@ -300,7 +427,7 @@ async function loadAll() {
   }
 }
 
-$("btnRefresh").onclick = loadAll;
+$("btnRefresh").onclick = () => { loadAll(); loadTelegram(); };
 
 $("btnAdd").onclick = async () => {
   const domain = $("fDomain").value.trim();
@@ -333,6 +460,7 @@ $("btnSync").onclick = async () => {
 };
 
 loadAll();
+loadTelegram();
 </script>
 </body>
 </html>
