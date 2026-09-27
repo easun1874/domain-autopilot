@@ -4,21 +4,22 @@
 # 全流程都在 VPS 上完成，不依赖任何本地电脑。
 #
 # 用法（VPS 上，root 身份）：
-#   bash bootstrap.sh --token ghp_xxxx         # 全自动：拉代码 + 安装（推荐）
-#   bash bootstrap.sh                          # 交互式：引导你配 deploy key，然后拉代码
+#   bash bootstrap.sh                          # 公开仓库匿名下载 + 安装（推荐，不用任何凭据）
+#   bash bootstrap.sh --token ghp_xxxx         # 私有仓库：用 PAT 下载
 #   bash bootstrap.sh --local-dir /root/da     # 源码已在机器上，跳过拉取直接装
 #   bash bootstrap.sh --skip-setup             # 只拉代码，不执行安装
 #   bash bootstrap.sh --update                 # 只更新已装的 deployment
 #
 # 环境变量（跟命令行参数等价，适合非交互场景）：
-#   GITHUB_TOKEN  GitHub Personal Access Token，拉私有仓库用
+#   GITHUB_TOKEN  仅私有仓库需要；公开仓库留空即可走匿名下载
 #   CF_TOKEN      Cloudflare API Token
 #   LE_EMAIL      Let's Encrypt 通知邮箱
 #
 # 拉代码的三条路，按顺序尝试 / 按需选择：
-#   1. GitHub PAT      --token      全自动，最省事
-#   2. SSH deploy key  交互式引导   一次配置，之后永久可用
-#   3. 本地已有源码    --local-dir  离线场景
+#   1. 公开仓库匿名下载  默认        零凭据，最省事
+#   2. GitHub PAT        --token    私有仓库全自动
+#   3. SSH deploy key    交互式引导  一次配置，之后永久可用
+#   4. 本地已有源码      --local-dir 离线场景
 set -euo pipefail
 
 REPO_OWNER="${REPO_OWNER:-easun1874}"
@@ -134,6 +135,24 @@ else
 			err "Token 下载失败：Token 无效，或没有本仓库的读取权限"
 			rm -rf "$tmp"
 			exit 1
+		fi
+	fi
+
+	# 3-A2. 公开仓库匿名下载 —— 不需要任何凭据，私有仓库会自然失败并往下走
+	if [ "$fetch_ok" -eq 0 ] && [ -z "$GITHUB_TOKEN" ]; then
+		info "未提供 GitHub Token，先试公开仓库匿名下载"
+		tmp="$(mktemp -d)"
+		if curl -fsSL --max-time 90 \
+			"https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/${BRANCH}" \
+			-o "$tmp/src.tar.gz" 2>/dev/null; then
+			rm -rf "$INSTALL_DIR"; mkdir -p "$INSTALL_DIR"
+			tar xzf "$tmp/src.tar.gz" -C "$INSTALL_DIR" --strip-components=1
+			rm -rf "$tmp"
+			log "源码已下载到 $INSTALL_DIR"
+			fetch_ok=1
+		else
+			rm -rf "$tmp"
+			info "匿名下载失败（仓库可能是私有的），转 SSH deploy key"
 		fi
 	fi
 

@@ -63,24 +63,35 @@ if [ -d "$INSTALL_DIR/.git" ]; then
 	fi
 	git pull --ff-only origin "$BRANCH" 2>&1 | tail -3 || { err "git pull 失败"; exit 1; }
 	log "代码已更新"
-elif [ -n "$GITHUB_TOKEN" ]; then
+else
 	if [ "$CHECK_ONLY" -eq 1 ]; then
-		REMOTE_SHA="$(curl -fsSL --max-time 20 -H "Authorization: Bearer $GITHUB_TOKEN" \
-			-H "Accept: application/vnd.github+json" "$API/commits/$BRANCH" 2>/dev/null \
-			| grep -m1 '"sha"' | sed 's/.*"sha": *"\([^"]*\)".*/\1/' | cut -c1-7)"
+		if [ -n "$GITHUB_TOKEN" ]; then
+			REMOTE_SHA="$(curl -fsSL --max-time 20 -H "Authorization: Bearer $GITHUB_TOKEN" \
+				-H "Accept: application/vnd.github+json" "$API/commits/$BRANCH" 2>/dev/null \
+				| grep -m1 '"sha"' | sed 's/.*"sha": *"\([^"]*\)".*/\1/' | cut -c1-7)" || true
+		else
+			REMOTE_SHA="$(curl -fsSL --max-time 20 \
+				-H "Accept: application/vnd.github+json" "$API/commits/$BRANCH" 2>/dev/null \
+				| grep -m1 '"sha"' | sed 's/.*"sha": *"\([^"]*\)".*/\1/' | cut -c1-7)" || true
+		fi
 		info "远端最新提交：${REMOTE_SHA:-取不到}"
 		exit 0
 	fi
 	tmp="$(mktemp -d)"
-	curl -fsSL --max-time 90 -H "Authorization: Bearer $GITHUB_TOKEN" \
-		-H "Accept: application/vnd.github+json" "$API/tarball/$BRANCH" -o "$tmp/src.tar.gz" \
-		|| { err "下载失败"; rm -rf "$tmp"; exit 1; }
+	if [ -n "$GITHUB_TOKEN" ]; then
+		curl -fsSL --max-time 90 -H "Authorization: Bearer $GITHUB_TOKEN" \
+			-H "Accept: application/vnd.github+json" "$API/tarball/$BRANCH" -o "$tmp/src.tar.gz" \
+			|| { err "下载失败"; rm -rf "$tmp"; exit 1; }
+	else
+		info "未提供 GITHUB_TOKEN，尝试公开仓库匿名下载"
+		curl -fsSL --max-time 90 \
+			"https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/${BRANCH}" \
+			-o "$tmp/src.tar.gz" \
+			|| { err "下载失败：仓库非公开时请先 export GITHUB_TOKEN"; rm -rf "$tmp"; exit 1; }
+	fi
 	tar xzf "$tmp/src.tar.gz" -C "$INSTALL_DIR" --strip-components=1
 	rm -rf "$tmp"
 	log "源码包已更新"
-else
-	err "既不是 git 仓库，也没有 GITHUB_TOKEN，没法更新"
-	exit 1
 fi
 
 NEW_REV="$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"

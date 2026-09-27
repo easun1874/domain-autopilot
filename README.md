@@ -42,27 +42,13 @@ ssh -p 2222 root@203.0.113.10
 
 ### 第 2 步：粘贴这一段，回车
 
-整段复制粘进去（包括最后的空行，`bash` 那行才是真正开跑的）：
-
 ```bash
-read -rsp 'GitHub Token: ' GHT && echo
-[ -z "$GHT" ] && { echo '没输 Token，退出'; exit 1; }
-rm -rf /tmp/da-src && mkdir -p /tmp/da-src
-curl -fsSL -H "Authorization: Bearer $GHT" \
-  "https://api.github.com/repos/easun1874/domain-autopilot/tarball/main" \
-  -o /tmp/da-src.tgz || { echo '下载失败：Token 无效，或没有本仓库读取权限'; exit 1; }
-tar xzf /tmp/da-src.tgz -C /tmp/da-src --strip-components=1
+curl -fsSL -o /tmp/da.tgz https://codeload.github.com/easun1874/domain-autopilot/tar.gz/refs/heads/main
+mkdir -p /tmp/da-src && tar xzf /tmp/da.tgz -C /tmp/da-src --strip-components=1
 bash /tmp/da-src/bootstrap.sh --local-dir /tmp/da-src
 ```
 
-第一段会**静默等你输入 GitHub Token**（屏幕不显示，直接粘贴回车）：
-
-```
-GitHub Token:
-```
-
-> **`ghp_` 开头的东西去哪拿**：`github.com/settings/tokens` → **Generate new token (classic)** → 勾一个 `repo`。
-> 它只用来拉私有仓库源码，**用完就作废也行**，机器上不留痕。
+仓库是**公开**的，不需要任何 GitHub Token，三行直接跑。
 
 ### 第 3 步：跟着提示走
 
@@ -94,8 +80,8 @@ GitHub Token:
   9/9 安装管理面板
 ```
 
-> **会出现两次 Token 提示，别搞混**：第一次是 **GitHub**（拉源码用，屏幕显示 `GitHub Token:`），
-> 第二次是 **Cloudflare**（管 DNS 和证书用，屏幕显示 `粘贴 Cloudflare API Token`）。
+> **全程只需要一个 Token**：Cloudflare API Token，屏幕提示是 `粘贴 Cloudflare API Token`。
+> 没有第二个 —— 源码是公开仓库直下的，不用 GitHub 凭据。
 
 ### 第 4 步：加第一个站点
 
