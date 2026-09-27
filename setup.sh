@@ -11,6 +11,12 @@
 #   ENABLE_CF_NATIVE=0     不自动打开 Caddy 原生 Cloudflare 集成（默认 auto=有 Token 就开）
 set -euo pipefail
 
+# 幂等：重跑时若没给 LE_EMAIL，沿用 Caddyfile 里已写好的，避免被占位符覆盖
+LE_EMAIL="${LE_EMAIL:-}"
+if [ -z "$LE_EMAIL" ] && [ -f /etc/caddy/Caddyfile ]; then
+	LE_EMAIL=$(awk '/^[[:space:]]*email[[:space:]]/&&$2!~/example\.com/{print $2; exit}' /etc/caddy/Caddyfile)
+	[ -n "$LE_EMAIL" ] && log "沿用已有 LE 邮箱：$LE_EMAIL"
+fi
 LE_EMAIL="${LE_EMAIL:-your-email@example.com}"
 CF_TOKEN_INPUT="${CF_TOKEN:-}"
 CF_TOKEN_FILE="${CF_TOKEN_FILE:-}"
