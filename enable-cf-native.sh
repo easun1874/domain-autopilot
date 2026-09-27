@@ -200,7 +200,9 @@ else
 fi
 
 # ---------- 校验并热加载 ----------
-if ! caddy fmt --overwrite --config "$CONF" >/dev/null 2>&1; then
+# 注意：caddy fmt 不认 --config（文件名是位置参数）。写 --config 会 unknown flag
+# 直接返回非 0，在 set -e/if 里表现为整个脚本失败。
+if ! caddy fmt --overwrite "$CONF" >/dev/null 2>&1; then
 	err "Caddyfile 格式化失败"; exit 1
 fi
 if ! caddy validate --config "$CONF" >/dev/null 2>&1; then
