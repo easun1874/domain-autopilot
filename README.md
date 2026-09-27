@@ -388,6 +388,31 @@ add-site.sh app.example.com 127.0.0.1:8080 --proxy
 > 不想敲命令、也不想开 SSH 隧道进面板？装了第 16 节的 Telegram 机器人后，
 > 在手机上发一句 `/add app.example.com 127.0.0.1:8080` 就完事了。
 
+### 上游该写什么：本机服务一律用 127.0.0.1
+
+上游地址是 **Caddy 作为客户端去连的目标**，跟域名解析、跟下面那个「源站 IP」完全是两回事：
+
+| 服务在哪 | 上游怎么写 |
+|---|---|
+| 同一台 VPS 上 | `127.0.0.1:端口` ← 就该这么写 |
+| 局域网另一台机器 | 那台机器的内网 IP，如 `192.168.1.10:5000` |
+| Docker 里 | compose 服务名，如 `wiki:3000`，或 `127.0.0.1:映射端口` |
+
+**别把本机公网 IP 写进上游。** 云主机的公网 IP 通常不在网卡上（网卡只有 `10.x` 私网地址），
+由边缘网关做 1:1 NAT。写成公网 IP 后，Caddy 得把包发出网卡、绕网关再送回来（hairpin），
+代价三条：
+
+1. 多一次公网往返。实测 connect 从 `0.15ms` 变成 `0.40ms` —— **这条可以忽略**，别为性能改
+2. 这条链路要求安全列表放行该端口。哪天你把 ingress 收紧，站点立刻 502，且报错不好查
+3. 最要紧的：为了让这条链路成立，后端端口得挂在公网上。**任何人扫到它，就能绕过 Caddy
+   和 HTTPS 直接访问你的服务**（`curl http://<你的IP>:8800` 直接出内容，证书形同虚设）
+
+第 3 条是真风险，不是理论。改成 `127.0.0.1` 后，就可以放心把那些端口的 ingress 从安全
+列表里全删掉，服务只从 Caddy 进。
+
+`add-site.sh` 已内置防护：上游里出现本机公网 IP、**且本机确实有进程在监听该端口**时，
+自动改写成 `127.0.0.1` 并提示；服务不在本机时保持原样，不会误伤。
+
 脚本内部自动完成的链路：
 
 ```
@@ -418,7 +443,9 @@ dynamic_dns 持续保底:   Caddy 自己每 5 分钟比对，VPS 换 IP 自动�
 sleep 20
 curl -sI https://app.example.com | head -1        # 期望 200
 curl -sI http://app.example.com | head -1         # 期望 301
-caddy certificates | grep -A4 app.example.com     # 证书状态
+# 看证书状态。Caddy 没有 list-certificates / certificates 子命令，直接问 openssl
+openssl s_client -connect app.example.com:443 -servername app.example.com </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -dates
 ```
 
 ---

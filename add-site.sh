@@ -44,6 +44,7 @@ EOF
 }
 
 log() { printf '\033[32m[ok]\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m[warn]\033[0m %s\n' "$*" >&2; }
 err() { printf '\033[31m[!!]\033[0m %s\n' "$*" >&2; }
 
 if [ "$#" -eq 0 ]; then usage; exit 1; fi
@@ -121,6 +122,27 @@ if [ "${UPSTREAM#unix/}" = "$UPSTREAM" ]; then
 			exit 1
 			;;
 	esac
+fi
+
+# 上游填本机公网 IP 是个隐蔽的坑：云主机的公网 IP 往往不在网卡上（网卡只有 10.x 私网
+# 地址），由边缘网关做 1:1 NAT。这样的上游会让 Caddy 把包发出网卡、绕网关再回来
+# （hairpin），既多走一次公网往返，又要求安全列表放行该端口——而后端端口本来就不该
+# 对公网开放。只有确认本机确有进程在监听该端口时才改写成回环；上游在别的机器上
+# （填本机公网 IP 只是为了走公网）则保持原样。
+LOCAL_PUB_IP=""
+if command -v cf_public_ip >/dev/null 2>&1; then
+	LOCAL_PUB_IP="$(cf_public_ip 2>/dev/null || true)"
+fi
+[ -n "$LOCAL_PUB_IP" ] || LOCAL_PUB_IP="$(cat /etc/caddy/.last_ip 2>/dev/null || true)"
+
+if [ -n "$LOCAL_PUB_IP" ] && [ "${UPSTREAM#*$LOCAL_PUB_IP}" != "$UPSTREAM" ] && [ "${UPSTREAM#unix/}" = "$UPSTREAM" ]; then
+	UP_PORT="$(printf '%s' "$UPSTREAM" | sed -nE 's|^[^:]*://||; s|^.*:([0-9]+)$|\1|p')"
+	if [ -n "$UP_PORT" ] && ss -lnt 2>/dev/null | grep -qE "[:.]${UP_PORT}[[:space:]]"; then
+		UPSTREAM="${UPSTREAM//$LOCAL_PUB_IP/127.0.0.1}"
+		warn "上游填的是本机公网 IP，本机确有 $UP_PORT 在监听，已自动改为 127.0.0.1（少绕网关一圈，也不必对公网开放该端口）"
+	else
+		warn "上游填的是本机公网 IP，但本机没查到监听端口 $UP_PORT，保持原样（服务可能在别的机器上）"
+	fi
 fi
 
 if [ -n "$EMAIL" ]; then
