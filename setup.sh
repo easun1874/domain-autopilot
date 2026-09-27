@@ -12,12 +12,14 @@
 set -euo pipefail
 
 # 幂等：重跑时若没给 LE_EMAIL，沿用 Caddyfile 里已写好的，避免被占位符覆盖
+# 绝不能把 your-email@example.com 这类占位符写进 Caddyfile —— Let's Encrypt 会直接拒签
+# （HTTP 400 invalidContact: contact email has forbidden domain "example.com"），
+# 结果是每个站点都拿不到证书。宁可留空：无邮箱注册是 LE 允许的。
 LE_EMAIL="${LE_EMAIL:-}"
 if [ -z "$LE_EMAIL" ] && [ -f /etc/caddy/Caddyfile ]; then
 	LE_EMAIL=$(awk '/^[[:space:]]*email[[:space:]]/&&$2!~/example\.com/{print $2; exit}' /etc/caddy/Caddyfile)
 	[ -n "$LE_EMAIL" ] && log "沿用已有 LE 邮箱：$LE_EMAIL"
 fi
-LE_EMAIL="${LE_EMAIL:-your-email@example.com}"
 CF_TOKEN_INPUT="${CF_TOKEN:-}"
 CF_TOKEN_FILE="${CF_TOKEN_FILE:-}"
 INSTALL_PANEL="${INSTALL_PANEL:-1}"
@@ -109,10 +111,27 @@ else
 	log "Token 已写入 /etc/caddy/cf.env（600）"
 fi
 
+# 邮箱和 Token 同属凭据类配置，一并放在 3/9 里问
+if [ -z "$LE_EMAIL" ] && [ -t 0 ]; then
+	echo
+	info "Let's Encrypt 邮箱：只用于接收证书到期 / 续期失败提醒，不是登录账号"
+	echo "  直接回车 = 不配置（证书照常自动签发与续期，但收不到任何提醒）"
+	read -rp "  Let's Encrypt 邮箱（可留空）: " LE_EMAIL_INPUT || true
+	LE_EMAIL="$(printf '%s' "${LE_EMAIL_INPUT:-}" | tr -d '[:space:]')"
+fi
+
 echo "== 4/9 写入 Caddy 配置 =="
 mkdir -p /etc/caddy/sites
 install -m 644 "$SCRIPT_DIR/Caddyfile" /etc/caddy/Caddyfile
-sed -i "s/^[[:space:]]*email .*/\temail ${LE_EMAIL}/" /etc/caddy/Caddyfile
+if [ -n "$LE_EMAIL" ]; then
+	sed -i "s/^[[:space:]]*email .*/\temail ${LE_EMAIL}/" /etc/caddy/Caddyfile
+	log "LE 邮箱已写入：$LE_EMAIL"
+else
+	# 留空优于写占位符：占位符会被 LE 拒签（站点全废），留空只是收不到提醒
+	sed -i "s/^[[:space:]]*email .*/\t# email 未配置：占位符会被 Let's Encrypt 拒签，故留空/" /etc/caddy/Caddyfile
+	err "未配置 LE 邮箱：证书能正常签发续期，但收不到到期提醒"
+	err "以后补：编辑 /etc/caddy/Caddyfile 的 email，再 caddy reload --config /etc/caddy/Caddyfile"
+fi
 log "主配置就位，站点目录 /etc/caddy/sites"
 
 echo "== 5/9 安装管理脚本 =="

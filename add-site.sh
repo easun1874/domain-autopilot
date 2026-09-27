@@ -86,7 +86,7 @@ CONF_FILE="$SITES_DIR/${DOMAIN}.conf"
 # ---------- 删除站点 ----------
 if [ "$REMOVE" -eq 1 ]; then
 	rm -f "$CONF_FILE"
-	caddy fmt --overwrite --config "$CONF" >/dev/null 2>&1 || true
+	caddy fmt --overwrite "$CONF" >/dev/null 2>&1 || true
 	caddy reload --config "$CONF" >/dev/null 2>&1 || systemctl reload caddy
 	log "已删除 $DOMAIN 的 Caddy 配置"
 	if [ "$NO_API_DNS" -eq 0 ] && command -v cf_delete_dns >/dev/null 2>&1; then
@@ -96,6 +96,20 @@ if [ "$REMOVE" -eq 1 ]; then
 fi
 
 [ -n "$UPSTREAM" ] || { err "缺少上游地址，例如 127.0.0.1:8080"; exit 1; }
+
+# Caddy 的 reverse_proxy 上游只接受 scheme://主机:端口，不接受路径、也不接受结尾斜杠。
+# 面板里手填 http://127.0.0.1:8080/ 是很自然的写法，但会让 caddy adapt 直接失败
+# （Error: URLs for proxy upstreams only support scheme, host, and port components），
+# 站点静默不生效。这里统一规范化，别让用户去踩。
+if [ "${UPSTREAM#unix/}" = "$UPSTREAM" ]; then
+	while [ "${UPSTREAM%/}" != "$UPSTREAM" ]; do UPSTREAM="${UPSTREAM%/}"; done
+	case "${UPSTREAM#*://}" in
+		*/*)
+			err "上游地址不能带路径，只支持 scheme://主机:端口（如 127.0.0.1:8080），收到：$UPSTREAM"
+			exit 1
+			;;
+	esac
+fi
 
 if [ -n "$EMAIL" ]; then
 	sed -i "s/^[[:space:]]*email .*/	email ${EMAIL}/" "$CONF"
@@ -166,13 +180,26 @@ fi
 chown root:root "$CONF_FILE"
 chmod 644 "$CONF_FILE"
 
-caddy fmt --overwrite --config "$CONF" >/dev/null 2>&1 || true
-if ! caddy validate --config "$CONF" >/dev/null 2>&1; then
-	err "Caddyfile 校验未通过，当前内容为："
-	cat "$CONF_FILE"
+caddy fmt --overwrite "$CONF" >/dev/null 2>&1 || true
+
+# 校验失败必须回滚刚写的片段文件：坏配置留在 sites/ 里，
+# 之后每一次 reload（其它站点、update 重启）都会失败，表现为
+# Caddy 一直跑着旧配置、新站点静默不生效，极难排查。
+if ! VALIDATE_ERR="$(caddy validate --config "$CONF" 2>&1)"; then
+	err "Caddyfile 校验未通过，已回滚本次生成的配置。caddy 报错："
+	echo "$VALIDATE_ERR" | tail -3 | sed 's/^/    /'
+	rm -f "$CONF_FILE"
 	exit 1
 fi
-caddy reload --config "$CONF" >/dev/null 2>&1 || systemctl reload caddy
+
+if ! RELOAD_ERR="$(caddy reload --config "$CONF" 2>&1)"; then
+	if ! systemctl reload caddy >/dev/null 2>&1; then
+		err "Caddy 重载失败，已回滚本次生成的配置。caddy 报错："
+		echo "$RELOAD_ERR" | tail -3 | sed 's/^/    /'
+		rm -f "$CONF_FILE"
+		exit 1
+	fi
+fi
 
 echo
 log "站点已添加: https://$DOMAIN  ->  $UPSTREAM"
