@@ -91,9 +91,9 @@ def add_site(payload):
     domain = (payload.get("domain") or "").strip()
     upstream = (payload.get("upstream") or "").strip()
     if not domain or not upstream:
-        return {"ok": False, "error": "域名和上游地址都不能为空"}
+        return {"ok": False, "bad_request": True, "error": "域名和上游地址都不能为空"}
     if not re.match(r"^[A-Za-z0-9._*-]+\.[A-Za-z]{2,}$", domain):
-        return {"ok": False, "error": "域名格式不对: %s" % domain}
+        return {"ok": False, "bad_request": True, "error": "域名格式不对: %s" % domain}
 
     cmd = "add-site.sh %s %s" % (shellquote(domain), shellquote(upstream))
     if payload.get("dns01"):
@@ -363,7 +363,10 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         body = self._read_body()
         if path == "/api/sites":
-            return self._json(add_site(body))
+            res = add_site(body)
+            # 输入非法 → 400；脚本执行失败 → 500
+            code = 200 if res.get("ok") else (400 if res.get("bad_request") else 500)
+            return self._json(res, code)
         if path == "/api/refresh":
             rc, out, err = sh("sync-dns.sh --check", timeout=120)
             return self._json({"ok": rc == 0, "output": out, "error": err})
