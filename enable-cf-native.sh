@@ -166,7 +166,7 @@ NEED_DDNS=0
 if [ "$HAS_PROVIDER" -eq 1 ] && ! grep -q "acme_dns cloudflare" "$CONF"; then
 	NEED_ACME=1
 fi
-if [ "$HAS_DYNAMIC" -eq 1 ] && ! grep -q "^dynamic_dns" "$CONF"; then
+if [ "$HAS_DYNAMIC" -eq 1 ] && ! grep -qE "^[[:space:]]*dynamic_dns" "$CONF"; then
 	NEED_DDNS=1
 fi
 

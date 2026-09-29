@@ -296,7 +296,11 @@ def get_status():
         "mock": False,
         "modules": {"dnsProviderCloudflare": has_provider, "dynamicDns": has_dynamic},
         "acmeDns": "acme_dns cloudflare" in caddyfile,
-        "dynamicDns": bool(re.search(r"^dynamic_dns\s*\{", caddyfile, re.M)),
+        # ⚠️ 必须允许行首空白：dynamic_dns 是**全局选项**，只能写在文件顶部 { } 块里，
+        # 也就是永远带一层缩进。用 ^dynamic_dns 匹配会把它判成「没启用」——
+        # 面板状态徽章假报未启用、enable-cf-native.sh 幂等失效（重复注入第二份），
+        # 两个 bug 同一个根因。acme_dns 那行用子串匹配所以没这问题。
+        "dynamicDns": bool(re.search(r"^[ \t]*dynamic_dns\s*\{", caddyfile, re.M)),
         "siteCount": len(list_sites()),
         "tokenReady": os.path.isfile(CF_ENV),
     }
